@@ -62,6 +62,11 @@ pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
     if url.host_str().map_or(true, str::is_empty) {
         return Err(ConfigError::InvalidUrl("missing host".into()));
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ConfigError::InvalidUrl(
+            "URLs must not contain a username or password; enter the key in the API key field".into(),
+        ));
+    }
     url.set_query(None);
     url.set_fragment(None);
     let mut path = url.path().trim_end_matches('/').to_string();
@@ -171,6 +176,17 @@ mod tests {
         }
         for bad in ["", "   ", "ftp://box", "http://", "http://exa mple.com"] {
             assert!(normalize_base_url(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn credentials_in_url_are_rejected_without_echo() {
+        for bad in ["http://user:secret@host:8080", "http://user@host", "http://:secret@host"] {
+            let err = normalize_base_url(bad).unwrap_err();
+            let msg = err.to_string();
+            assert!(matches!(err, ConfigError::InvalidUrl(_)), "{bad:?}");
+            assert!(!msg.contains("secret") && !msg.contains("user"), "leaked: {msg}");
+            assert!(msg.contains("API key"), "{msg}");
         }
     }
 
