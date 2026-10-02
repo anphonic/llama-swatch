@@ -64,7 +64,7 @@ pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ConfigError::InvalidUrl(
-            "URLs must not contain a username or password; enter the key in the API key field".into(),
+            "URLs must not contain embedded credentials; enter the key in the API key field".into(),
         ));
     }
     url.set_query(None);
