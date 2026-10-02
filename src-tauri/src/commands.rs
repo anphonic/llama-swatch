@@ -222,6 +222,22 @@ pub async fn test_connection(
     Ok(client::test_connection(&client).await)
 }
 
+/// True only when `base_url` normalizes successfully to the saved URL. Never
+/// reads the key.
+pub fn url_matches_saved(base_url: &str, saved: Option<&Settings>) -> bool {
+    match (normalize_base_url(base_url), saved) {
+        (Ok(url), Some(s)) => url == s.base_url,
+        _ => false,
+    }
+}
+
+/// Lets the UI ask whether an edited URL is the saved one (and so would reuse
+/// the saved key) without duplicating the normalization rules.
+#[tauri::command]
+pub fn is_saved_url(state: State<'_, AppState>, base_url: String) -> bool {
+    url_matches_saved(&base_url, load_settings(&state.config_path).as_ref())
+}
+
 #[tauri::command]
 pub fn get_snapshot(state: State<'_, AppState>) -> Option<Snapshot> {
     state.latest.lock().expect("latest poisoned").clone()
@@ -284,6 +300,18 @@ mod tests {
         });
         assert_eq!(restarter.join().unwrap(), mine + 1);
         assert!(latest.lock().unwrap().is_none(), "restart's clear came after the publish");
+    }
+
+    #[test]
+    fn url_matches_saved_uses_backend_normalization() {
+        let saved = settings("http://box:8080");
+        for same in ["box:8080/v1", "http://box:8080/", " HTTP://Box:8080/v1/ ", "http://box:8080/?x=1"] {
+            assert!(url_matches_saved(same, Some(&saved)), "{same:?}");
+        }
+        for other in ["http://other:8080", "https://box:8080", "box:9090", "", "ftp://box", "http://u:p@box:8080"] {
+            assert!(!url_matches_saved(other, Some(&saved)), "{other:?}");
+        }
+        assert!(!url_matches_saved("http://box:8080", None), "nothing saved");
     }
 
     #[test]
