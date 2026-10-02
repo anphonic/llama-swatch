@@ -82,7 +82,12 @@ export function renderSetup(
     showStatus("Testing…", "pending");
     try {
       const result = await testConnection(url.value, apiKeyValue());
-      const { ok, text } = describeResult(result, view.hasKey && apiKeyValue() === null);
+      const keyBlank = apiKeyValue() === null;
+      const sameUrl = normalizeUrl(url.value) === normalizeUrl(s.baseUrl);
+      const { ok, text } = describeResult(result, {
+        savedKeySent: view.hasKey && keyBlank && sameUrl,
+        savedKeyNotSent: view.hasKey && keyBlank && !sameUrl,
+      });
       showStatus(text, ok ? "ok" : "error");
       return ok;
     } catch (e) {
@@ -117,7 +122,18 @@ export function renderSetup(
   );
 }
 
-function describeResult(r: TestResult, usingSavedKey: boolean): { ok: boolean; text: string } {
+function normalizeUrl(u: string): string {
+  return u.trim().replace(/\/+$/, "");
+}
+
+interface KeyContext {
+  /** The saved key was actually sent: key field blank and URL unchanged. */
+  savedKeySent: boolean;
+  /** A key is saved but the URL was edited, so the backend did not send it. */
+  savedKeyNotSent: boolean;
+}
+
+function describeResult(r: TestResult, ctx: KeyContext): { ok: boolean; text: string } {
   switch (r.kind) {
     case "ok":
       return { ok: true, text: `Connected — llama-swap ${r.version}` };
@@ -126,9 +142,10 @@ function describeResult(r: TestResult, usingSavedKey: boolean): { ok: boolean; t
     case "unauthorized":
       return {
         ok: false,
-        text: usingSavedKey
+        text: ctx.savedKeySent
           ? "llama-swap rejected the saved API key."
-          : "llama-swap needs a valid API key (see apiKeys in its config).",
+          : "llama-swap needs a valid API key (see apiKeys in its config)." +
+            (ctx.savedKeyNotSent ? " Re-enter the API key — the saved key is only sent to the saved URL." : ""),
       };
     case "notLlamaSwap":
       return { ok: false, text: `That server doesn't look like llama-swap: ${r.message}` };

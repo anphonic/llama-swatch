@@ -16,12 +16,22 @@ function showSetup(view: SettingsView) {
 
 async function showDashboard(view: SettingsView) {
   dashboard?.destroy();
-  const current = createDashboard(view.settings, async () => showSetup(await getSettings()));
+  const current = createDashboard(view.settings, async () => {
+    try {
+      showSetup(await getSettings());
+    } catch (e) {
+      console.error("failed to load settings:", String(e));
+    }
+  });
   dashboard = current;
   root.replaceChildren(current.element);
   // The first snapshot may have been emitted before we subscribed; fetch it.
-  const snap = await getSnapshot();
-  if (snap && dashboard === current) current.update(snap);
+  try {
+    const snap = await getSnapshot();
+    if (snap && dashboard === current) current.update(snap);
+  } catch (e) {
+    console.error("failed to fetch snapshot:", String(e));
+  }
 }
 
 async function boot() {
