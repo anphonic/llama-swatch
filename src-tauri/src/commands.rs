@@ -59,6 +59,18 @@ pub fn resolve_key(
     }
 }
 
+/// Key for a connection test. A saved key is only reused when the tested URL
+/// is the saved URL, so a typo'd or new host never receives it.
+pub fn key_for_test(
+    secrets: &dyn SecretStore,
+    saved: Option<&Settings>,
+    base_url_normalized: &str,
+    api_key: Option<String>,
+) -> Result<Option<String>, ConfigError> {
+    let same_url = saved.is_some_and(|c| c.base_url == base_url_normalized);
+    resolve_key(secrets, saved.filter(|_| same_url), api_key)
+}
+
 /// Validates, stores the key in the keychain (migrating it if the URL
 /// changed), then writes the settings file. Returns what was saved.
 pub fn apply_settings(
@@ -155,7 +167,7 @@ pub async fn test_connection(
 ) -> Result<TestResult, String> {
     let url = normalize_base_url(&base_url).map_err(|e| e.to_string())?;
     let current = load_settings(&state.config_path);
-    let key = resolve_key(state.secrets.as_ref(), current.as_ref(), api_key).map_err(|e| e.to_string())?;
+    let key = key_for_test(state.secrets.as_ref(), current.as_ref(), &url, api_key).map_err(|e| e.to_string())?;
     let client = LlamaSwapClient::new(&url, key).map_err(|e| e.to_string())?;
     Ok(client::test_connection(&client).await)
 }
@@ -241,5 +253,17 @@ mod tests {
         assert_eq!(resolve_key(&store, Some(&current), Some(" new ".into())).unwrap().as_deref(), Some("new"));
         assert_eq!(resolve_key(&store, Some(&current), Some("".into())).unwrap(), None);
         assert_eq!(resolve_key(&store, None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn key_for_test_only_sends_saved_key_to_saved_url() {
+        let store = MemoryStore::default();
+        store.set("http://box:8080", "k1").unwrap();
+        let saved = settings("http://box:8080");
+        assert_eq!(key_for_test(&store, Some(&saved), "http://box:8080", None).unwrap().as_deref(), Some("k1"));
+        assert_eq!(key_for_test(&store, Some(&saved), "http://typo:8080", None).unwrap(), None);
+        assert_eq!(key_for_test(&store, None, "http://box:8080", None).unwrap(), None);
+        assert_eq!(key_for_test(&store, Some(&saved), "http://typo:8080", Some(" new ".into())).unwrap().as_deref(), Some("new"));
+        assert_eq!(key_for_test(&store, Some(&saved), "http://box:8080", Some("".into())).unwrap(), None);
     }
 }
