@@ -162,3 +162,5 @@ input {
 .form-status { min-height: 1.4em; margin: 0; }
 .form-status[data-kind="ok"] { color: var(--green); }
 .form-status[data-kind="error"] { color: var(--red); }
+.card-seen { font-size: 12px; color: var(--muted); }
+.card-seen[hidden] { display: none; }
