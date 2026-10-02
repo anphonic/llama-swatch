@@ -1,0 +1,4 @@
+{"running":[
+  {"model":"embed","name":"","description":"","state":"starting","ttl":0,"cmd":"llama-server --port 9002","proxy":"http://127.0.0.1:9002"},
+  {"model":"qwen3-30b","name":"Qwen3 30B","description":"general chat","state":"ready","ttl":300,"cmd":"llama-server --port 9001 -m qwen.gguf","proxy":"http://127.0.0.1:9001"}
+]}

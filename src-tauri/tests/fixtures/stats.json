@@ -1,0 +1,3 @@
+{"total_requests":42,"total_input_tokens":51234,"total_output_tokens":20480,"total_cache_tokens":8000,
+ "prompt_histogram":{"bins":[1,4,9,3],"min":100,"max":900,"binSize":200,"p50":420.5,"p95":810.2,"p99":880.0},
+ "gen_histogram":{"bins":[2,7,12,5,1],"min":10,"max":60,"binSize":10,"p50":38.4,"p95":52.1,"p99":57.9}}

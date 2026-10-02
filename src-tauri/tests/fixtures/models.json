@@ -1,0 +1,5 @@
+{"object":"list","data":[
+  {"id":"embed","object":"model","created":1759400000,"owned_by":"llama-swap","name":"","description":""},
+  {"id":"gemma-12b","object":"model","created":1759400000,"owned_by":"llama-swap","name":"Gemma 12B","description":"vision"},
+  {"id":"qwen3-30b","object":"model","created":1759400000,"owned_by":"llama-swap","name":"Qwen3 30B","description":"general chat","meta":{"llamaswap":{"aliases":["qwen"]}}}
+]}
