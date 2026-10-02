@@ -136,3 +136,35 @@ async fn stopping_the_handle_stops_snapshots() {
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(rx.try_recv().is_err(), "no snapshots after stop");
 }
+
+#[tokio::test]
+async fn transient_version_failure_is_retried_until_it_succeeds() {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    // The first /api/version answers 500; later ones fall through to the healthy mock.
+    Mock::given(path("/api/version"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    let first = wait_for(&mut rx, "connected", |s| matches!(s.connection, Connection::Connected { .. })).await;
+    assert_eq!(first.version, None, "the 500 must not yield a version");
+    wait_for(&mut rx, "version after retry", |s| s.version.as_deref() == Some("v188")).await;
+}
+
+#[tokio::test]
+async fn missing_version_endpoint_is_not_re_asked_every_tick() {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(404)).with_priority(1).mount(&server).await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    wait_for(&mut rx, "connected", |s| matches!(s.connection, Connection::Connected { .. })).await;
+    // Let several 200 ms ticks pass.
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let asked = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/api/version").count();
+    assert_eq!(asked, 1, "404 means unsupported; do not retry");
+}

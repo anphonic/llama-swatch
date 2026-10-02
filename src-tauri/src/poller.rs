@@ -57,7 +57,8 @@ pub struct PollData {
     pub latency: Duration,
     pub running: Vec<RunningModel>,
     pub models: Option<Vec<ModelEntry>>,
-    pub version: Option<VersionInfo>,
+    /// `None` when not requested this tick; otherwise the outcome of the fetch.
+    pub version: Option<Feature<VersionInfo>>,
     pub stats: Feature<StatsResponse>,
     pub activity: Feature<Vec<ActivityEntry>>,
 }
@@ -106,7 +107,7 @@ pub async fn poll_once(client: &LlamaSwapClient, want_models: bool, want_version
         latency,
         running,
         models: best_effort("/v1/models", models),
-        version: best_effort("/api/version", version),
+        version: version.map(|r| Feature::from_result("/api/version", r)),
         stats: Feature::from_result("/api/metrics/stats", stats),
         activity: Feature::from_result("/api/metrics/activity", activity),
     })

@@ -12,7 +12,7 @@ use crate::backoff::Backoff;
 use crate::client::{ClientError, LlamaSwapClient};
 use crate::events::{decode_event, StreamEvent};
 use crate::monitor::{MonitorState, Snapshot};
-use crate::poller::{poll_once, PollOutcome};
+use crate::poller::{poll_once, Feature, PollOutcome};
 use crate::sse::SseParser;
 use crate::state::Thresholds;
 
@@ -104,9 +104,9 @@ async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Durat
         let delay = match &outcome {
             PollOutcome::Ok(d) => {
                 backoff.reset();
-                // Spec: version is fetched once per (re)connection. Clear the flag even when
-                // /api/version 404s, or older llama-swap builds get re-asked every tick.
-                need_version = false;
+                // Version is fetched once per (re)connection. Success and 404 (older builds
+                // without the endpoint) both settle it; a transient failure is retried.
+                need_version = matches!(d.version, Some(Feature::Failed));
                 if d.models.is_some() {
                     models_fetched_at = Some(Instant::now());
                 }

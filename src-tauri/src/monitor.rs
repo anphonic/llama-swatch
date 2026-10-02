@@ -101,8 +101,10 @@ impl MonitorState {
             PollOutcome::Ok(d) => {
                 self.connection = Connection::Connected { latency_ms: d.latency.as_millis() as u64 };
                 self.last_ok_ms = Some(wall_ms);
-                if let Some(v) = d.version {
-                    self.version = Some(v.version);
+                match d.version {
+                    Some(Feature::Available(v)) => self.version = Some(v.version),
+                    Some(Feature::Unavailable) => self.version = None,
+                    Some(Feature::Failed) | None => {}
                 }
                 if let Some(m) = d.models {
                     self.configured = m.into_iter().filter(ModelEntry::is_local_model).collect();
