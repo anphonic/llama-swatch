@@ -43,11 +43,11 @@ function describe(card: ModelCard, settings: Settings): string {
     case "loading":
       return `Starting for ${formatDuration(s.elapsedS)} · timeout ${formatDuration(settings.thresholds.loadTimeoutS)}`;
     case "idle":
-      return `Up ${formatDuration(s.uptimeS)}${tok ? ` · last ${tok.toFixed(1)} tok/s` : ""}`;
+      return `Up ${formatDuration(s.uptimeS)}${tok !== undefined ? ` · last ${tok.toFixed(1)} tok/s` : ""}`;
     case "busy":
       return [
         `${s.requests} request${s.requests === 1 ? "" : "s"}`,
-        tok ? `${tok.toFixed(1)} tok/s` : null,
+        tok !== undefined ? `${tok.toFixed(1)} tok/s` : null,
         formatDuration(s.oldestElapsedS),
       ].filter(Boolean).join(" · ");
     case "stalled":
@@ -120,6 +120,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     gear,
   );
 
+  const liveHint = h("div", { class: "live-hint" }, "Live events unavailable — busy/stalled request detection is off");
+  liveHint.hidden = true;
   const banner = h("div", { class: "banner" });
   banner.hidden = true;
   const openSettings = h("button", { type: "button" }, "Open settings");
@@ -140,7 +142,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     h("div", { class: "tiles" }, tiles.requests.el, tiles.input.el, tiles.output.el, tiles.speed.el),
     histBox,
   );
-  const element = h("main", { class: "dashboard" }, header, banner, grid, stats);
+  const element = h("main", { class: "dashboard" }, header, liveHint, banner, grid, stats);
 
   const cards = new Map<string, CardView>();
   let last: Snapshot | null = null;
@@ -163,6 +165,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       ? "Receiving live request events"
       : "Live events unavailable: Busy and stalled-request detection are off";
     live.classList.toggle("badge-live", s.liveEvents);
+    liveHint.hidden = s.liveEvents || c.kind !== "connected";
 
     const seen = s.lastOkMs ? ` · last seen ${formatAgo(s.lastOkMs)}` : "";
     if (c.kind === "unauthorized") showBanner("llama-swap rejected the API key.", true);
