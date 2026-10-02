@@ -145,6 +145,7 @@ pub enum TestResult {
 pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
     match client.health().await {
         Err(ClientError::Unreachable(message)) => return TestResult::Unreachable { message },
+        Err(ClientError::Unauthorized) => return TestResult::Unauthorized,
         Err(e) => return TestResult::NotLlamaSwap { message: format!("/health: {e}") },
         Ok((body, _)) if body.trim() != "OK" => {
             return TestResult::NotLlamaSwap { message: "/health did not answer OK".into() }

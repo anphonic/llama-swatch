@@ -78,3 +78,11 @@ async fn down_server_is_unreachable() {
     let client = LlamaSwapClient::new(&closed_port_url(), None).unwrap();
     assert!(matches!(poll_once(&client, true, true).await, PollOutcome::Unreachable(_)));
 }
+
+#[tokio::test]
+async fn unauthorized_health_is_unauthorized() {
+    let server = MockServer::start().await;
+    Mock::given(path("/health")).respond_with(ResponseTemplate::new(401)).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(poll_once(&client, true, true).await, PollOutcome::Unauthorized);
+}

@@ -18,17 +18,36 @@ pub enum Feature<T> {
 }
 
 impl<T> Feature<T> {
-    fn from_result(r: Result<T, ClientError>) -> Self {
+    /// Classifies an optional endpoint. Unauthorized/Unreachable here are
+    /// intentionally `Failed` (keep the previous value): `/running` carries the
+    /// auth and reachability signal for the whole tick.
+    fn from_result(endpoint: &str, r: Result<T, ClientError>) -> Self {
         match r {
             Ok(v) => Feature::Available(v),
             Err(ClientError::NotFound) => Feature::Unavailable,
             Err(e) => {
                 // serde messages describe the JSON shape only; they never contain the key.
-                if let ClientError::Decode(m) = &e {
-                    eprintln!("llama-swap returned malformed JSON: {m}");
-                }
+                log_decode(endpoint, &e);
                 Feature::Failed
             }
+        }
+    }
+}
+
+fn log_decode(endpoint: &str, e: &ClientError) {
+    // serde messages describe the JSON shape only; they never contain the key.
+    if let ClientError::Decode(m) = e {
+        eprintln!("llama-swap {endpoint} returned malformed JSON: {m}");
+    }
+}
+
+/// Best-effort: errors become `None` (logged if malformed).
+fn best_effort<T>(endpoint: &str, r: Option<Result<T, ClientError>>) -> Option<T> {
+    match r? {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log_decode(endpoint, &e);
+            None
         }
     }
 }
@@ -55,6 +74,7 @@ pub async fn poll_once(client: &LlamaSwapClient, want_models: bool, want_version
     let latency = match client.health().await {
         Ok((_, latency)) => latency,
         Err(ClientError::Unreachable(m)) => return PollOutcome::Unreachable(m),
+        Err(ClientError::Unauthorized) => return PollOutcome::Unauthorized,
         Err(e) => return PollOutcome::Error(format!("/health: {e}")),
     };
     let (running, stats, activity, models, version) = tokio::join!(
@@ -85,9 +105,9 @@ pub async fn poll_once(client: &LlamaSwapClient, want_models: bool, want_version
     PollOutcome::Ok(PollData {
         latency,
         running,
-        models: models.and_then(|r| r.ok()),
-        version: version.and_then(|r| r.ok()),
-        stats: Feature::from_result(stats),
-        activity: Feature::from_result(activity),
+        models: best_effort("/v1/models", models),
+        version: best_effort("/api/version", version),
+        stats: Feature::from_result("/api/metrics/stats", stats),
+        activity: Feature::from_result("/api/metrics/activity", activity),
     })
 }

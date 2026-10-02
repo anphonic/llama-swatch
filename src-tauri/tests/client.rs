@@ -120,3 +120,11 @@ async fn test_connection_old_llama_swap_without_version_endpoint() {
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
     assert_eq!(test_connection(&client).await, TestResult::Ok { version: "unknown".into() });
 }
+
+#[tokio::test]
+async fn test_connection_unauthorized_health() {
+    let server = MockServer::start().await;
+    Mock::given(path("/health")).respond_with(ResponseTemplate::new(401)).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(test_connection(&client).await, TestResult::Unauthorized);
+}
