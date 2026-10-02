@@ -105,7 +105,7 @@ impl MonitorState {
                     self.version = Some(v.version);
                 }
                 if let Some(m) = d.models {
-                    self.configured = m;
+                    self.configured = m.into_iter().filter(ModelEntry::is_local_model).collect();
                 }
                 self.track_states(&d.running, now);
                 self.running = d.running;
@@ -282,6 +282,19 @@ mod tests {
         assert_eq!(card(&s, "a").name, "a", "empty name falls back to id");
         assert_eq!(s.connection, Connection::Connected { latency_ms: 12 });
         assert_eq!(s.last_ok_ms, Some(WALL));
+    }
+
+    #[test]
+    fn alias_selector_and_peer_records_do_not_become_cards() {
+        let t0 = Instant::now();
+        let mut m = MonitorState::new("h");
+        let list: crate::api::ModelsResponse =
+            serde_json::from_str(include_str!("../tests/fixtures/models_mixed.json")).unwrap();
+        m.apply_poll(PollOutcome::Ok(data(vec![running("gemma-12b", "ready", 0)], Some(list.data))), t0, WALL);
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        let ids: Vec<&str> = s.models.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["gemma-12b", "legacy", "nometa"]);
+        assert_eq!(card(&s, "gemma-12b").state, ModelState::Idle { uptime_s: 0 });
     }
 
     #[test]

@@ -1,0 +1,9 @@
+{"object":"list","data":[
+  {"id":"gemma-12b","object":"model","name":"Gemma 12B","description":"","meta":{"llamaswap":{"type":"model","aliases":["gemma"]},"n_ctx":8192}},
+  {"id":"gemma","object":"model","name":"Gemma 12B","description":"","meta":{"llamaswap":{"type":"alias","modelID":"gemma-12b"}}},
+  {"id":"fast","object":"model","name":"","description":"","meta":{"llamaswap":{"type":"selector","strategy":"pin","targets":["gemma-12b"]}}},
+  {"id":"peer1/big","object":"model","name":"peer1: big","description":"","meta":{"llamaswap":{"type":"peer","peerID":"peer1"}}},
+  {"id":"pinned","object":"model","name":"","description":"","meta":{"llamaswap":{"type":"profile"}}},
+  {"id":"legacy","object":"model","name":"","description":""},
+  {"id":"nometa","object":"model","meta":null}
+]}
