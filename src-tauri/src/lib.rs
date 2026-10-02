@@ -1,4 +1,5 @@
 pub mod api;
+pub mod config;
 pub mod events;
 pub mod sse;
 pub mod state;
