@@ -2,6 +2,7 @@ pub mod api;
 pub mod client;
 pub mod config;
 pub mod events;
+pub mod poller;
 pub mod sse;
 pub mod state;
 
