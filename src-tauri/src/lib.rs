@@ -1,6 +1,7 @@
 pub mod api;
 pub mod events;
 pub mod sse;
+pub mod state;
 
 pub fn run() {
     tauri::Builder::default()
