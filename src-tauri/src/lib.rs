@@ -1,4 +1,5 @@
 pub mod api;
+pub mod sse;
 
 pub fn run() {
     tauri::Builder::default()
