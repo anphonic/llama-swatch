@@ -60,10 +60,10 @@ export function renderSetup(
     baseUrl: url.value,
     pollIntervalMs: Math.round(readNumber(poll, 2) * 1000),
     thresholds: {
-      loadTimeoutS: readNumber(load, 120),
-      stopTimeoutS: readNumber(stop, 30),
-      firstByteTimeoutS: readNumber(firstByte, 90),
-      streamStallTimeoutS: readNumber(stall, 30),
+      loadTimeoutS: readSeconds(load, 120),
+      stopTimeoutS: readSeconds(stop, 30),
+      firstByteTimeoutS: readSeconds(firstByte, 90),
+      streamStallTimeoutS: readSeconds(stall, 30),
     },
   });
 
@@ -158,6 +158,11 @@ function numberInput(id: string, value: number, min: number, max: number, step: 
 
 function field(id: string, label: string, input: HTMLElement, hint?: string): HTMLElement {
   return h("div", { class: "field" }, h("label", { for: id }, label), input, hint ? h("span", { class: "hint" }, hint) : null);
+}
+
+/** Thresholds are whole seconds on the Rust side (u64). */
+function readSeconds(input: HTMLInputElement, fallback: number): number {
+  return Math.max(1, Math.round(readNumber(input, fallback)));
 }
 
 function readNumber(input: HTMLInputElement, fallback: number): number {

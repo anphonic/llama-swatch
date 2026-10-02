@@ -42,6 +42,10 @@ impl Settings {
     pub fn sanitized(mut self) -> Result<Self, ConfigError> {
         self.base_url = normalize_base_url(&self.base_url)?;
         self.poll_interval_ms = self.poll_interval_ms.clamp(MIN_POLL_MS, MAX_POLL_MS);
+        let t = &mut self.thresholds;
+        for v in [&mut t.load_timeout_s, &mut t.stop_timeout_s, &mut t.first_byte_timeout_s, &mut t.stream_stall_timeout_s] {
+            *v = (*v).max(1);
+        }
         Ok(self)
     }
 }
@@ -196,6 +200,18 @@ mod tests {
         assert_eq!(s.poll_interval_ms, MIN_POLL_MS);
         let s = Settings { poll_interval_ms: 9_999_999, ..Default::default() }.sanitized().unwrap();
         assert_eq!(s.poll_interval_ms, MAX_POLL_MS);
+    }
+
+    #[test]
+    fn sanitized_clamps_thresholds_to_at_least_one() {
+        let thresholds = Thresholds { load_timeout_s: 0, stop_timeout_s: 0, first_byte_timeout_s: 0, stream_stall_timeout_s: 0 };
+        let s = Settings { thresholds, ..Default::default() }.sanitized().unwrap();
+        assert_eq!(
+            s.thresholds,
+            Thresholds { load_timeout_s: 1, stop_timeout_s: 1, first_byte_timeout_s: 1, stream_stall_timeout_s: 1 }
+        );
+        let s = Settings::default().sanitized().unwrap();
+        assert_eq!(s.thresholds, Thresholds::default());
     }
 
     #[test]

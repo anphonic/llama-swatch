@@ -71,8 +71,13 @@ pub fn key_for_test(
     resolve_key(secrets, saved.filter(|_| same_url), api_key)
 }
 
-/// Validates, stores the key in the keychain (migrating it if the URL
-/// changed), then writes the settings file. Returns what was saved.
+/// Validates, stores the key in the keychain, writes the settings file, then
+/// cleans up stale keychain entries. Returns what was saved.
+///
+/// `api_key`: `Some(k)` stores `k`, `Some("")` removes the key, `None` keeps
+/// the saved key only if the URL is unchanged (a saved key is never handed to
+/// a different host). Keychain trouble is fatal only when the user supplied a
+/// key that cannot be stored; otherwise it is logged and treated as "no key".
 pub fn apply_settings(
     path: &Path,
     secrets: &dyn SecretStore,
@@ -81,17 +86,37 @@ pub fn apply_settings(
 ) -> Result<(Settings, Option<String>), ConfigError> {
     let current = load_settings(path);
     let settings = settings.sanitized()?;
-    let key = resolve_key(secrets, current.as_ref(), api_key)?;
-    match &key {
-        Some(k) => secrets.set(&settings.base_url, k)?,
-        None => secrets.delete(&settings.base_url)?,
-    }
-    if let Some(old) = &current {
-        if old.base_url != settings.base_url {
-            secrets.delete(&old.base_url)?;
+    let old_url = current.as_ref().map(|c| c.base_url.clone()).filter(|u| *u != settings.base_url);
+
+    let key = match api_key.map(|k| k.trim().to_string()) {
+        Some(k) if !k.is_empty() => {
+            secrets.set(&settings.base_url, &k)?;
+            Some(k)
+        }
+        Some(_) => None,
+        None if old_url.is_none() && current.is_some() => match secrets.get(&settings.base_url) {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("keychain unavailable, continuing without a saved key: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+
+    config::save_settings(path, &settings)?;
+
+    // Best effort: a keychain failure here must not fail an already-saved config.
+    if key.is_none() {
+        if let Err(e) = secrets.delete(&settings.base_url) {
+            eprintln!("could not remove keychain entry: {e}");
         }
     }
-    config::save_settings(path, &settings)?;
+    if let Some(old) = old_url {
+        if let Err(e) = secrets.delete(&old) {
+            eprintln!("could not remove old keychain entry: {e}");
+        }
+    }
     Ok((settings, key))
 }
 
@@ -222,16 +247,63 @@ mod tests {
     }
 
     #[test]
-    fn url_change_with_blank_key_migrates_key() {
+    fn url_change_with_blank_key_drops_key_and_never_sends_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let store = MemoryStore::default();
         apply_settings(&path, &store, settings("http://old:8080"), Some("k1".into())).unwrap();
         let (saved, key) = apply_settings(&path, &store, settings("http://new:8080"), None).unwrap();
         assert_eq!(saved.base_url, "http://new:8080");
-        assert_eq!(key.as_deref(), Some("k1"));
-        assert_eq!(store.get("http://new:8080").unwrap().as_deref(), Some("k1"));
+        assert_eq!(key, None, "old key must not be sent to the new host");
+        assert_eq!(store.get("http://new:8080").unwrap(), None);
         assert_eq!(store.get("http://old:8080").unwrap(), None, "old entry is cleaned up");
+    }
+
+    /// Keychain whose every call fails like Linux without a Secret Service.
+    struct BrokenStore;
+    impl SecretStore for BrokenStore {
+        fn get(&self, _: &str) -> Result<Option<String>, ConfigError> {
+            Err(ConfigError::Keychain("platform failure".into()))
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), ConfigError> {
+            Err(ConfigError::Keychain("platform failure".into()))
+        }
+        fn delete(&self, _: &str) -> Result<(), ConfigError> {
+            Err(ConfigError::Keychain("platform failure".into()))
+        }
+    }
+
+    #[test]
+    fn broken_keychain_does_not_block_save_without_a_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let (_, key) = apply_settings(&path, &BrokenStore, settings("http://box:8080"), None).unwrap();
+        assert_eq!(key, None);
+        // second save: same URL, saved-key lookup fails, still non-fatal
+        let (_, key) = apply_settings(&path, &BrokenStore, settings("http://box:8080"), None).unwrap();
+        assert_eq!(key, None);
+        let (_, key) = apply_settings(&path, &BrokenStore, settings("http://other:8080"), Some(" ".into())).unwrap();
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn broken_keychain_fails_save_when_user_supplies_a_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert!(apply_settings(&path, &BrokenStore, settings("http://box:8080"), Some("k".into())).is_err());
+        assert!(!path.exists(), "nothing written when the key could not be stored");
+    }
+
+    #[test]
+    fn old_key_survives_a_failed_file_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = MemoryStore::default();
+        apply_settings(&path, &store, settings("http://old:8080"), Some("k1".into())).unwrap();
+        // Make the atomic rename fail by putting a directory where the tmp file goes.
+        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(apply_settings(&path, &store, settings("http://new:8080"), Some("k2".into())).is_err());
+        assert_eq!(store.get("http://old:8080").unwrap().as_deref(), Some("k1"));
     }
 
     #[test]
