@@ -2,6 +2,8 @@
 name = "llama-swap-monitor"
 version = "0.1.0"
 description = "Desktop monitor for llama-swap"
+authors = ["anphonic"]
+license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.77.2"
 
