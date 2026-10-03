@@ -1,13 +1,14 @@
-import { h } from "../dom";
+import { h, svg } from "../dom";
 import { formatAgo, formatCount, formatDuration } from "../format";
 import { countLoaded, isLoaded } from "../models";
 import type { Connection, ModelCard, ModelState, Settings, Snapshot } from "../types";
-import { loadModel, unloadModel } from "../api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { loadModel, setAlwaysOnTopSetting, unloadModel } from "../api";
 import { renderHistogram } from "./components/histogram";
 import { createRing, type Ring } from "./components/ring";
 import { renderSparkline } from "./components/sparkline";
 import { createStatTile } from "./components/statTile";
-import { renderTtlBar } from "./components/ttlBar";
+import { createTtlBar, ttlLabel } from "./components/ttlBar";
 import { createHistory } from "./history";
 
 export interface Dashboard {
@@ -60,6 +61,15 @@ function describe(card: ModelCard, settings: Settings): string {
   }
 }
 
+function pinIcon(): SVGSVGElement {
+  return svg(
+    "svg",
+    { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" },
+    svg("path", { d: "M12 17v5" }),
+    svg("path", { d: "M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" }),
+  );
+}
+
 function isStale(c: Connection): boolean {
   return c.kind !== "connected" && c.kind !== "connecting";
 }
@@ -70,26 +80,27 @@ interface CardActions {
   unload(card: ModelCard, x: number, y: number): void;
 }
 
+/** Fixed-height card (see `.card` in styles.css): every state fills the same slots, so a state
+ *  change never moves the cards below it. Empty slots keep their space. */
 class CardView {
   readonly el: HTMLElement;
   private readonly ring: Ring = createRing();
   private readonly title = h("div", { class: "card-title" });
   private readonly pill = h("span", { class: "pill" });
-  private readonly detail = h("div", { class: "card-detail" });
-  private readonly extras = h("div", { class: "card-extras" });
-  private readonly seen = h("div", { class: "card-seen" });
+  private readonly detail = h("span", { class: "card-detail" });
+  private readonly sub = h("div", { class: "card-sub" });
+  private readonly spark = h("div", { class: "card-spark" });
+  private readonly ttl = createTtlBar();
 
   private card: ModelCard | null = null;
 
   constructor(private readonly settings: Settings, actions: CardActions) {
-    this.seen.hidden = true;
     this.el = h(
       "article",
       { class: "card" },
-      h("div", { class: "card-head" }, this.ring.el, h("div", { class: "card-heading" }, this.title, this.pill)),
-      this.detail,
-      this.extras,
-      this.seen,
+      this.ring.el,
+      h("div", { class: "card-main" }, this.title, h("div", { class: "card-line" }, this.pill, this.detail), this.sub),
+      h("div", { class: "card-side" }, this.spark, this.ttl.el),
     );
     this.el.addEventListener("dblclick", () => {
       if (this.card?.state.kind === "notLoaded") actions.load(this.card);
@@ -114,17 +125,17 @@ class CardView {
     this.title.title = card.description ? `${card.id} — ${card.description}` : card.id;
     this.ring.update(s, this.settings.thresholds.loadTimeoutS);
     this.pill.textContent = PILL[s.kind];
-    this.detail.textContent = describe(card, this.settings);
-    this.seen.hidden = lastSeenMs === null;
-    this.seen.textContent = lastSeenMs === null ? "" : `Last seen ${formatAgo(lastSeenMs)}`;
-    const extras: Node[] = [];
-    if ((s.kind === "busy" || s.kind === "idle") && card.tokSHistory.length >= 2) {
-      extras.push(renderSparkline(card.tokSHistory));
-    }
-    if (s.kind === "idle" && card.ttlS !== null && card.ttlRemainingS !== null) {
-      extras.push(renderTtlBar(card.ttlRemainingS, card.ttlS));
-    }
-    this.extras.replaceChildren(...extras);
+    const detail = describe(card, this.settings);
+    this.detail.textContent = detail;
+    this.detail.title = detail; // full text when ellipsized
+    // One reserved line: "last seen" while disconnected, else the unload estimate while idle.
+    const ttlOn = s.kind === "idle" && card.ttlS !== null && card.ttlRemainingS !== null;
+    this.sub.textContent =
+      lastSeenMs !== null ? `Last seen ${formatAgo(lastSeenMs)}` : ttlOn ? ttlLabel(card.ttlRemainingS as number) : "";
+    this.ttl.update(ttlOn ? (card.ttlRemainingS as number) : null, card.ttlS ?? 0);
+    this.spark.replaceChildren(
+      ...((s.kind === "busy" || s.kind === "idle") && card.tokSHistory.length >= 2 ? [renderSparkline(card.tokSHistory)] : []),
+    );
   }
 }
 
@@ -173,6 +184,23 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const meta = h("span", { class: "meta" });
   const gear = h("button", { type: "button", class: "icon-button", "aria-label": "Settings", title: "Settings" }, "⚙");
   gear.addEventListener("click", onOpenSettings);
+  let pinned = settings.alwaysOnTop;
+  const pin = h("button", { type: "button", class: "icon-button pin" });
+  pin.append(pinIcon());
+  function renderPin() {
+    pin.setAttribute("aria-pressed", String(pinned));
+    const label = pinned ? "Stop keeping on top" : "Keep on top";
+    pin.title = label;
+    pin.setAttribute("aria-label", label);
+  }
+  renderPin();
+  pin.addEventListener("click", () => {
+    pinned = !pinned;
+    renderPin();
+    // Some platforms (e.g. certain Wayland compositors) ignore or reject this; stay quiet.
+    getCurrentWindow().setAlwaysOnTop(pinned).catch((e) => console.warn("setAlwaysOnTop:", String(e)));
+    setAlwaysOnTopSetting(pinned).catch((e) => console.warn("could not save pin state:", String(e)));
+  });
   const viewButtons: Record<View, HTMLButtonElement> = {
     models: h("button", { type: "button", class: "seg" }, "Models"),
     history: h("button", { type: "button", class: "seg" }, "History"),
@@ -184,6 +212,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     dot,
     h("div", { class: "header-main" }, h("div", { class: "header-line" }, statusText, live), h("div", { class: "header-line" }, host, meta)),
     switcher,
+    pin,
     gear,
   );
 
@@ -197,8 +226,13 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   let loadedOnly = readLoadedOnly();
   const loadedOnlyBox = h("input", { type: "checkbox", id: "loaded-only" });
   loadedOnlyBox.checked = loadedOnly;
-  const loadedOnlyText = h("span", {}, "Loaded only");
-  const toolbar = h("div", { class: "toolbar" }, h("label", { class: "toggle", for: "loaded-only" }, loadedOnlyBox, loadedOnlyText));
+  const loadedCount = h("span", { class: "muted loaded-count" });
+  const toolbar = h(
+    "div",
+    { class: "toolbar" },
+    loadedCount,
+    h("label", { class: "toggle", for: "loaded-only" }, loadedOnlyBox, h("span", {}, "Loaded only")),
+  );
   loadedOnlyBox.addEventListener("change", () => {
     loadedOnly = loadedOnlyBox.checked;
     writeLoadedOnly(loadedOnly);
@@ -224,7 +258,10 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   );
   const modelsView = h("div", { class: "models-view" }, toolbar, grid, stats);
   const history = createHistory();
-  const element = h("main", { class: "dashboard" }, header, liveHint, banner, toast, modelsView, history.element);
+  // Banner, toast and the live-events hint overlay the bottom of the window instead of sitting in
+  // the flow, so showing or hiding them never pushes content down.
+  const notices = h("div", { class: "notices" }, liveHint, banner, toast);
+  const element = h("main", { class: "dashboard" }, header, modelsView, history.element, notices);
 
   const cards = new Map<string, CardView>();
   let last: Snapshot | null = null;
@@ -348,7 +385,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       ids.add(m.id);
       if (!loadedOnly || isLoaded(m)) ordered.push(view.el);
     }
-    loadedOnlyText.textContent = `Loaded only (${countLoaded(s.models)} of ${s.models.length})`;
+    loadedCount.textContent = `${countLoaded(s.models)} of ${s.models.length} loaded`;
     empty.textContent = s.models.length ? "No models loaded." : "No models reported yet.";
     for (const id of [...cards.keys()]) if (!ids.has(id)) cards.delete(id);
     const wanted = ordered.length ? ordered : [empty];

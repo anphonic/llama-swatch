@@ -14,6 +14,9 @@ export const testConnection = (baseUrl: string, apiKey: string | null) =>
 /** Whether `baseUrl` normalizes (backend rules) to the saved URL, i.e. would reuse the saved key. */
 export const isSavedUrl = (baseUrl: string) => invoke<boolean>("is_saved_url", { baseUrl });
 
+/** Remembers the pin button's state; the window itself is changed with `setAlwaysOnTop`. */
+export const setAlwaysOnTopSetting = (on: boolean) => invoke<void>("set_always_on_top", { on });
+
 export const getSnapshot = () => invoke<Snapshot | null>("get_snapshot");
 
 export const getActivity = (limit: number) => invoke<ActivityRow[]>("get_activity", { limit });

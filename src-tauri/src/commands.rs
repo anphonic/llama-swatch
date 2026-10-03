@@ -197,6 +197,13 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsView {
     SettingsView { configured: current.is_some(), settings: current.unwrap_or_default(), has_key }
 }
 
+/// Remembers the header pin button's state. The window itself is changed by the frontend
+/// (`setAlwaysOnTop`), so a platform that ignores it never produces an error here.
+#[tauri::command]
+pub fn set_always_on_top(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    config::save_always_on_top(&state.config_path, on).map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// INVARIANT: every command that takes the `latest` lock must be `async`. `publish_if_current`
 /// emits under that lock, and with Tauri's `tracing` feature `emit` blocks until the main
 /// thread services it; a sync command runs on the main thread and would deadlock waiting for

@@ -67,6 +67,7 @@ export interface Settings {
   baseUrl: string;
   pollIntervalMs: number;
   thresholds: Thresholds;
+  alwaysOnTop: boolean;
 }
 
 export interface SettingsView {

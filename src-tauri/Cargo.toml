@@ -22,6 +22,7 @@ futures-util = "0.3"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+tauri-plugin-window-state = "2"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -16,9 +16,10 @@ const LIMIT = 200;
 const REFRESH_MS = 5000;
 const ALL = "";
 
-const COLUMNS: [string, boolean][] = [
-  ["Time", false], ["Model", false], ["Mode", false], ["Status", false],
-  ["Input", true], ["Cached", true], ["Output", true], ["tok/s", true], ["Duration", true],
+// Widths in px; Model (width 0) takes the rest. Fixed so a refresh never re-flows the columns.
+const COLUMNS: [string, boolean, number][] = [
+  ["Time", false, 84], ["Model", false, 0], ["Mode", false, 68], ["Status", false, 64],
+  ["Input", true, 76], ["Cached", true, 76], ["Output", true, 76], ["tok/s", true, 68], ["Duration", true, 84],
 ];
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -45,18 +46,19 @@ export function createHistory(): History {
 
   const select = h("select", { "aria-label": "Filter by model" });
   const swapsBox = h("input", { type: "checkbox", id: "swaps-only" });
+  const noteText = `${LIMIT} most recent · refreshes every ${REFRESH_MS / 1000} s`;
+  const note = h("span", { class: "history-note muted" }, noteText);
   const toolbar = h(
     "div",
     { class: "history-toolbar" },
     select,
     h("label", { class: "toggle", for: "swaps-only" }, swapsBox, h("span", {}, "Swaps only")),
-    h("span", { class: "history-note muted" }, `${LIMIT} most recent · refreshes every ${REFRESH_MS / 1000} s`),
+    note,
   );
-  const message = h("p", { class: "muted history-message" });
-  message.hidden = true;
   const tbody = h("tbody");
-  const table = h("table", { class: "history-table" }, h("thead", {}, h("tr", {}, ...COLUMNS.map(([name, numeric]) => h("th", numeric ? { class: "num" } : {}, name)))), tbody);
-  const element = h("section", { class: "history" }, toolbar, message, h("div", { class: "table-scroll" }, table));
+  const cols = h("colgroup", {}, ...COLUMNS.map(([, , w]) => { const col = h("col"); if (w) col.style.width = `${w}px`; return col; }));
+  const table = h("table", { class: "history-table" }, cols, h("thead", {}, h("tr", {}, ...COLUMNS.map(([name, numeric]) => h("th", numeric ? { class: "num" } : {}, name)))), tbody);
+  const element = h("section", { class: "history" }, toolbar, h("div", { class: "table-scroll" }, table));
 
   // Rebuilding an open <select> closes its popup, so only touch it when the model set changed.
   let optionKey = "\u0000";
@@ -75,6 +77,19 @@ export function createHistory(): History {
     renderSelect();
     // Swaps are judged on the full list, then filtered, so a filter never changes what counts as a swap.
     const shown = markSwaps(rows).filter((m) => (filter === ALL || m.row.model === filter) && (!swapsOnly || m.swap));
+    // Messages live in the table body (and errors in the toolbar note) rather than in extra
+    // elements, so nothing above the table appears or disappears.
+    const text = error && !rows.length ? `Could not load history: ${error}`
+      : !rows.length ? "No requests recorded yet."
+      : !shown.length ? "No rows match the filter."
+      : null;
+    note.textContent = error && rows.length ? `Could not refresh: ${error}` : noteText;
+    note.title = note.textContent;
+    note.classList.toggle("history-error", !!error && rows.length > 0);
+    if (text !== null) {
+      tbody.replaceChildren(h("tr", {}, h("td", { colspan: String(COLUMNS.length), class: "muted history-empty" }, text)));
+      return;
+    }
     tbody.replaceChildren(
       ...shown.map(({ row, swap }) => {
         const tr = h("tr", { title: `${row.reqPath} · id ${row.id}` });
@@ -94,10 +109,6 @@ export function createHistory(): History {
         return tr;
       }),
     );
-    if (error) message.textContent = `Could not load history: ${error}`;
-    else if (!rows.length) message.textContent = "No requests recorded yet.";
-    else if (!shown.length) message.textContent = "No rows match the filter.";
-    message.hidden = !error && !!shown.length;
   }
 
   async function refresh() {

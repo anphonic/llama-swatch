@@ -30,11 +30,13 @@ pub struct Settings {
     pub base_url: String,
     pub poll_interval_ms: u64,
     pub thresholds: Thresholds,
+    /// Keep the window above other windows. Applied at startup and by the header pin button.
+    pub always_on_top: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { base_url: "http://localhost:8080".into(), poll_interval_ms: 2000, thresholds: Thresholds::default() }
+        Self { base_url: "http://localhost:8080".into(), poll_interval_ms: 2000, thresholds: Thresholds::default(), always_on_top: false }
     }
 }
 
@@ -124,6 +126,16 @@ pub fn save_settings(path: &Path, s: &Settings) -> Result<(), ConfigError> {
     fs::write(&tmp, json)?;
     fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// Persists only the pin flag. Does nothing (returns `Ok(false)`) while unconfigured, so toggling
+/// the pin can never create a settings file with a made-up server URL.
+pub fn save_always_on_top(path: &Path, on: bool) -> Result<bool, ConfigError> {
+    match load_settings(path) {
+        Some(s) if s.always_on_top == on => Ok(true),
+        Some(s) => save_settings(path, &Settings { always_on_top: on, ..s }).map(|()| true),
+        None => Ok(false),
+    }
 }
 
 pub trait SecretStore: Send + Sync {
@@ -265,7 +277,7 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
-        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default() };
+        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true };
         save_settings(&path, &s).unwrap();
         assert_eq!(load_settings(&path), Some(s));
         assert!(!path.with_extension("json.tmp").exists(), "temp file is renamed away");
@@ -291,6 +303,33 @@ mod tests {
         assert_eq!(s.base_url, "http://box:9000");
         assert_eq!(s.poll_interval_ms, 2000);
         assert_eq!(s.thresholds, Thresholds::default());
+        assert!(!s.always_on_top, "old settings files default to not pinned");
+    }
+
+    #[test]
+    fn always_on_top_is_read_and_written_camel_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"baseUrl":"box:9000","alwaysOnTop":true}"#).unwrap();
+        assert!(load_settings(&path).unwrap().always_on_top);
+        let s = Settings { always_on_top: true, ..Default::default() };
+        save_settings(&path, &s).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"alwaysOnTop\": true"));
+    }
+
+    #[test]
+    fn save_always_on_top_updates_only_that_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert_eq!(save_always_on_top(&path, true).unwrap(), false, "unconfigured: nothing written");
+        assert!(!path.exists());
+        std::fs::write(&path, r#"{"baseUrl":"box:9000","pollIntervalMs":3000}"#).unwrap();
+        assert!(save_always_on_top(&path, true).unwrap());
+        let s = load_settings(&path).unwrap();
+        assert!(s.always_on_top);
+        assert_eq!((s.base_url.as_str(), s.poll_interval_ms), ("http://box:9000", 3000));
+        assert!(save_always_on_top(&path, false).unwrap());
+        assert!(!load_settings(&path).unwrap().always_on_top);
     }
 
     #[test]

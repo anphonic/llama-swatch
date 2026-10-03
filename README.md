@@ -21,6 +21,19 @@ on your LAN, or behind a reverse proxy.
 Busy and request-level Stalled detection need llama-swap's live event stream (`/api/events`).
 The header badge shows `live` when it's connected and `polling` when it isn't.
 
+## Window
+
+- The window opens at 481 x 770 and is always resizable. The app never resizes or moves it
+  by itself; your size, position and maximized state are remembered between launches. If the
+  saved position is on a monitor that is no longer connected, the window opens centred instead.
+- Cards are one per row at a fixed height, and the header, toolbar, tiles and History columns
+  keep their size as data changes, so nothing jumps around. Status banners and error toasts
+  overlay the bottom of the window rather than pushing content down.
+- The pin button in the header (left of the gear) keeps the window above other windows. The
+  choice is saved in the settings file and re-applied at startup. Always-on-top is a window
+  manager feature: on Linux it works on X11, but some Wayland compositors ignore it, in which
+  case the button simply has no effect.
+
 ## Install
 
 Download the installer for your OS from the [Releases](../../releases) page.
