@@ -51,7 +51,7 @@ impl Settings {
 }
 
 /// Accepts what people paste: missing scheme, trailing slashes, an
-/// OpenAI-style `/v1` suffix, stray query strings. Keeps any reverse-proxy
+/// OpenAI-style `/v1` suffix, llama-swap's `/ui` web path (and anything under it), stray query strings. Keeps any reverse-proxy
 /// path prefix. Returns `scheme://host[:port][/prefix]` with no trailing slash.
 pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
     let trimmed = input.trim();
@@ -74,7 +74,10 @@ pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
     url.set_query(None);
     url.set_fragment(None);
     let mut path = url.path().trim_end_matches('/').to_string();
-    if path.ends_with("/v1") {
+    // llama-swap's web UI lives at /ui (people paste it from the browser), with sub-pages below it.
+    if let Some(i) = path.rfind("/ui/").or_else(|| path.ends_with("/ui").then(|| path.len() - 3)) {
+        path.truncate(i);
+    } else if path.ends_with("/v1") {
         path.truncate(path.len() - 3);
     }
     url.set_path(&path);
@@ -174,6 +177,13 @@ mod tests {
             ("http://box:8080/?x=1#frag", "http://box:8080"),
             ("HTTP://Box:8080", "http://box:8080"),
             ("http://[::1]:8080", "http://[::1]:8080"),
+            ("https://llama.example.test/ui", "https://llama.example.test"),
+            ("https://llama.example.test/ui/", "https://llama.example.test"),
+            ("https://llama.example.test/ui/models", "https://llama.example.test"),
+            ("https://h/llama/ui", "https://h/llama"),
+            ("https://h/llama/ui/models/", "https://h/llama"),
+            ("https://h/uikit", "https://h/uikit"),
+            ("https://h/menu/v1", "https://h/menu"),
         ];
         for (input, expected) in ok {
             assert_eq!(normalize_base_url(input).unwrap(), expected, "input: {input:?}");

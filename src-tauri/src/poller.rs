@@ -91,7 +91,7 @@ pub enum PollOutcome {
 pub async fn poll_once(client: &LlamaSwapClient, want_models: bool, want_version: bool) -> PollOutcome {
     let latency = match client.health().await {
         Ok((_, latency)) => latency,
-        Err(ClientError::Unreachable(m)) => return PollOutcome::Unreachable(m),
+        Err(ClientError::Unreachable(m)) | Err(ClientError::Redirect(m)) => return PollOutcome::Unreachable(m),
         Err(ClientError::Unauthorized) => return PollOutcome::Unauthorized,
         Err(e) => return PollOutcome::Error(format!("/health: {e}")),
     };
@@ -117,7 +117,7 @@ pub async fn poll_once(client: &LlamaSwapClient, want_models: bool, want_version
     let running = match running {
         Ok(r) => r,
         Err(ClientError::Unauthorized) => return PollOutcome::Unauthorized,
-        Err(ClientError::Unreachable(m)) => return PollOutcome::Unreachable(m),
+        Err(ClientError::Unreachable(m)) | Err(ClientError::Redirect(m)) => return PollOutcome::Unreachable(m),
         Err(e) => return PollOutcome::Error(format!("/running: {e}")),
     };
     PollOutcome::Ok(PollData {

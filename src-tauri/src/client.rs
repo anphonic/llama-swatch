@@ -23,6 +23,8 @@ pub enum ClientError {
     NotFound,
     #[error("HTTP {0}")]
     Http(u16),
+    #[error("{0}")]
+    Redirect(String),
     #[error("unexpected response: {0}")]
     Decode(String),
 }
@@ -43,14 +45,34 @@ impl std::fmt::Debug for LlamaSwapClient {
     }
 }
 
+/// Short reason if `text` (one link of an error chain) looks like a TLS/certificate failure.
+fn tls_reason(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let hit = ["certificate", "unknownissuer", "unknown issuer", "badcertificate", "tls", "handshake", "invalid peer"]
+        .iter()
+        .any(|k| lower.contains(k));
+    hit.then(|| {
+        let t = text.trim();
+        let t = t.strip_prefix("invalid peer certificate: ").unwrap_or(t);
+        t.chars().take(120).collect()
+    })
+}
+
 fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() {
-        "timed out".into()
-    } else if e.is_connect() {
-        "connection refused or host not found".into()
-    } else {
-        e.without_url().to_string()
+        return "timed out".into();
     }
+    if e.is_connect() {
+        let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(&e);
+        while let Some(err) = src {
+            if let Some(reason) = tls_reason(&err.to_string()) {
+                return format!("TLS certificate not trusted: {reason}");
+            }
+            src = err.source();
+        }
+        return "connection refused or host not found".into();
+    }
+    e.without_url().to_string()
 }
 
 impl LlamaSwapClient {
@@ -58,6 +80,8 @@ impl LlamaSwapClient {
         let http = Client::builder()
             .connect_timeout(REQUEST_TIMEOUT)
             .tcp_keepalive(Duration::from_secs(30))
+            // The API key must only ever go to the saved URL, never to a redirect target.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ClientError::Unreachable(describe(e)))?;
         Ok(Self {
@@ -85,6 +109,13 @@ impl LlamaSwapClient {
             s if s.is_success() => Ok(resp),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ClientError::Unauthorized),
             StatusCode::NOT_FOUND => Err(ClientError::NotFound),
+            s if s.is_redirection() => {
+                let loc = resp.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok());
+                Err(ClientError::Redirect(match loc {
+                    Some(l) => format!("llama-swap redirected to {l} \u{2014} use that URL instead"),
+                    None => "llama-swap redirected the request \u{2014} check the URL (http vs https)".into(),
+                }))
+            }
             s => Err(ClientError::Http(s.as_u16())),
         }
     }
@@ -144,7 +175,9 @@ pub enum TestResult {
 /// falls back to `/running`.
 pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
     match client.health().await {
-        Err(ClientError::Unreachable(message)) => return TestResult::Unreachable { message },
+        Err(ClientError::Unreachable(message)) | Err(ClientError::Redirect(message)) => {
+            return TestResult::Unreachable { message }
+        }
         Err(ClientError::Unauthorized) => return TestResult::Unauthorized,
         Err(e) => return TestResult::NotLlamaSwap { message: format!("/health: {e}") },
         Ok((body, _)) if body.trim() != "OK" => {
@@ -156,7 +189,9 @@ pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
         Ok(v) if !v.version.is_empty() => TestResult::Ok { version: v.version },
         Ok(_) => TestResult::NotLlamaSwap { message: "/api/version has no version".into() },
         Err(ClientError::Unauthorized) => TestResult::Unauthorized,
-        Err(ClientError::Unreachable(message)) => TestResult::Unreachable { message },
+        Err(ClientError::Unreachable(message)) | Err(ClientError::Redirect(message)) => {
+            TestResult::Unreachable { message }
+        }
         Err(ClientError::NotFound) => match client.running().await {
             Ok(_) => TestResult::Ok { version: "unknown".into() },
             Err(ClientError::Unauthorized) => TestResult::Unauthorized,
@@ -169,6 +204,54 @@ pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn redirect_is_not_followed_and_reports_location() {
+        let server = MockServer::start().await;
+        let target = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(308).insert_header("Location", format!("{}/health", target.uri())))
+            .expect(2) // one per call below (health, then test_connection); never a retry or follow
+            .mount(&server)
+            .await;
+        Mock::given(header("authorization", "Bearer k")).respond_with(ResponseTemplate::new(200).set_body_string("OK")).expect(0).mount(&target).await;
+
+        let c = LlamaSwapClient::new(&server.uri(), Some("k".into())).unwrap();
+        let err = c.health().await.unwrap_err();
+        let ClientError::Redirect(msg) = &err else { panic!("expected Redirect, got {err:?}") };
+        assert!(msg.contains(&format!("{}/health", target.uri())), "{msg}");
+        assert!(msg.contains("use that URL instead"), "{msg}");
+        match test_connection(&c).await {
+            TestResult::Unreachable { message } => assert!(message.contains("redirected to"), "{message}"),
+            other => panic!("{other:?}"),
+        }
+        // wiremock verifies expect(1)/expect(0) on drop: no second request, no key leak.
+    }
+
+    #[test]
+    fn describe_flags_certificate_errors() {
+        assert!(tls_reason("invalid peer certificate: UnknownIssuer").is_some());
+        assert!(tls_reason("received fatal alert: BadCertificate").is_some());
+        assert!(tls_reason("tcp connect error: Connection refused (os error 10061)").is_none());
+        assert!(tls_reason("dns error: failed to lookup address information").is_none());
+    }
+
+    #[tokio::test]
+    async fn closed_port_still_reports_connection_refused() {
+        // Regression guard: walking the source chain must not misclassify a plain refusal as TLS.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let c = LlamaSwapClient::new(&format!("https://127.0.0.1:{port}"), None).unwrap();
+        match c.health().await {
+            Err(ClientError::Unreachable(m)) => assert!(m.contains("connection refused"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn debug_output_redacts_key() {
