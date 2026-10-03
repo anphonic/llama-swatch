@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use reqwest::{Client, RequestBuilder, Response, StatusCode};
+use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -12,6 +12,10 @@ use crate::api::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// `GET /upstream/{model}/` blocks until the model is up, which can take minutes.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// Unloading waits for the upstream process to stop.
+const UNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ClientError {
@@ -25,6 +29,8 @@ pub enum ClientError {
     Http(u16),
     #[error("{0}")]
     Redirect(String),
+    #[error("invalid model id")]
+    InvalidModelId,
     #[error("unexpected response: {0}")]
     Decode(String),
 }
@@ -95,12 +101,16 @@ impl LlamaSwapClient {
         &self.base
     }
 
-    fn get(&self, path: &str) -> RequestBuilder {
-        let rb = self.http.get(format!("{}{}", self.base, path));
+    fn request(&self, method: Method, path: &str) -> RequestBuilder {
+        let rb = self.http.request(method, format!("{}{}", self.base, path));
         match &self.key {
             Some(k) => rb.bearer_auth(k),
             None => rb,
         }
+    }
+
+    fn get(&self, path: &str) -> RequestBuilder {
+        self.request(Method::GET, path)
     }
 
     async fn send(rb: RequestBuilder) -> Result<Response, ClientError> {
@@ -152,10 +162,39 @@ impl LlamaSwapClient {
         Ok(self.get_json::<ActivityResponse>(&path).await?.data)
     }
 
+    /// Asks llama-swap to start `id` by requesting its upstream root. The call blocks until the
+    /// model is up (minutes, possibly); any 2xx is success and the body is ignored.
+    pub async fn load_model(&self, id: &str) -> Result<(), ClientError> {
+        let path = format!("/upstream/{}/", encode_segment(id)?);
+        Self::send(self.get(&path).timeout(LOAD_TIMEOUT)).await.map(drop)
+    }
+
+    pub async fn unload_model(&self, id: &str) -> Result<(), ClientError> {
+        let path = format!("/api/models/unload/{}", encode_segment(id)?);
+        Self::send(self.request(Method::POST, &path).timeout(UNLOAD_TIMEOUT)).await.map(drop)
+    }
+
     /// Opens the SSE stream. Only the connect phase is time-limited; the body stays open.
     pub async fn events(&self) -> Result<Response, ClientError> {
         Self::send(self.get("/api/events").header("Accept", "text/event-stream")).await
     }
+}
+
+/// Percent-encodes `id` as exactly one URL path segment: everything but unreserved characters is
+/// escaped, so `/`, `?`, `#`, `%` and spaces cannot leave the segment. `.` and `..` are refused
+/// because URL parsing would treat them (even as `%2E`) as dot segments and climb out.
+fn encode_segment(id: &str) -> Result<String, ClientError> {
+    if id.trim().is_empty() || id == "." || id == ".." {
+        return Err(ClientError::InvalidModelId);
+    }
+    let mut out = String::with_capacity(id.len());
+    for b in id.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    Ok(out)
 }
 
 /// Endpoint paths this client requests; used to recover the base URL from a redirect target.

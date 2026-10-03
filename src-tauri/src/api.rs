@@ -133,6 +133,7 @@ pub struct ActivityEntry {
     pub timestamp: String,
     pub model: String,
     pub req_path: String,
+    pub resp_content_type: String,
     pub resp_status_code: i64,
     pub duration_ms: i64,
     pub tokens: TokenMetrics,
@@ -144,6 +145,41 @@ impl ActivityEntry {
         chrono::DateTime::parse_from_rfc3339(&self.timestamp)
             .ok()
             .map(|t| t.timestamp_millis())
+    }
+}
+
+/// One History row as the webview sees it: only what the table shows, camelCase, no client address.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityRow {
+    pub id: i64,
+    pub timestamp_ms: Option<i64>,
+    pub model: String,
+    pub req_path: String,
+    pub content_type: String,
+    pub status: i64,
+    pub duration_ms: i64,
+    pub input_tokens: i64,
+    pub cache_tokens: i64,
+    pub output_tokens: i64,
+    pub tokens_per_second: f64,
+}
+
+impl From<&ActivityEntry> for ActivityRow {
+    fn from(a: &ActivityEntry) -> Self {
+        Self {
+            id: a.id,
+            timestamp_ms: a.timestamp_ms(),
+            model: a.model.clone(),
+            req_path: a.req_path.clone(),
+            content_type: a.resp_content_type.clone(),
+            status: a.resp_status_code,
+            duration_ms: a.duration_ms,
+            input_tokens: a.tokens.input_tokens,
+            cache_tokens: a.tokens.cache_tokens,
+            output_tokens: a.tokens.output_tokens,
+            tokens_per_second: a.tokens.tokens_per_second,
+        }
     }
 }
 
@@ -215,6 +251,18 @@ mod tests {
         let expected = chrono::DateTime::parse_from_rfc3339("2026-10-02T17:00:30.5Z").unwrap().timestamp_millis();
         assert_eq!(a.data[0].timestamp_ms(), Some(expected));
         assert!(a.data[1].timestamp_ms().is_some(), "nanosecond precision must parse");
+    }
+
+    #[test]
+    fn activity_row_serializes_for_the_frontend() {
+        let a: ActivityResponse = serde_json::from_str(include_str!("../tests/fixtures/activity.json")).unwrap();
+        let v = serde_json::to_value(ActivityRow::from(&a.data[1])).unwrap();
+        assert_eq!(v["id"], 2);
+        assert_eq!(v["contentType"], "application/json");
+        assert_eq!(v["cacheTokens"], 512);
+        assert_eq!(v["tokensPerSecond"], 39.5);
+        assert!(v["timestampMs"].is_i64());
+        assert!(v.get("src").is_none());
     }
 
     #[test]

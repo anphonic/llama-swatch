@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::api::ActivityRow;
 use crate::client::{self, LlamaSwapClient, TestResult};
 use crate::config::{self, load_settings, normalize_base_url, ConfigError, SecretStore, Settings};
 use crate::monitor::Snapshot;
@@ -249,6 +250,45 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<Option<Snapshot>
     Ok(state.latest.lock().expect("latest poisoned").clone())
 }
 
+/// Most rows `get_activity` will return, whatever the webview asks for.
+const MAX_ACTIVITY_LIMIT: u32 = 1000;
+
+/// Model ids come from the webview, so only an id in the latest snapshot's model list is used.
+pub fn validate_model_id(snapshot: Option<&Snapshot>, id: &str) -> Result<(), String> {
+    match snapshot {
+        Some(s) if s.models.iter().any(|m| m.id == id) => Ok(()),
+        _ => Err("unknown model".into()),
+    }
+}
+
+/// Client for the saved URL and its saved key; the key never leaves this function except into the client.
+fn saved_client(state: &AppState) -> Result<LlamaSwapClient, String> {
+    let settings = load_settings(&state.config_path).ok_or("not configured")?;
+    let key = state.secrets.get(&settings.base_url).ok().flatten();
+    LlamaSwapClient::new(&settings.base_url, key).map_err(|e| e.to_string())
+}
+
+/// Recent requests, newest first. Async for the same reason as `save_settings`.
+#[tauri::command]
+pub async fn get_activity(state: State<'_, AppState>, limit: u32) -> Result<Vec<ActivityRow>, String> {
+    let client = saved_client(&state)?;
+    let rows = client.activity(limit.clamp(1, MAX_ACTIVITY_LIMIT)).await.map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(ActivityRow::from).collect())
+}
+
+/// Blocks until the model is up (possibly minutes); the webview fires it and watches snapshots.
+#[tauri::command]
+pub async fn load_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    validate_model_id(state.latest.lock().expect("latest poisoned").as_ref(), &id)?;
+    saved_client(&state)?.load_model(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unload_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    validate_model_id(state.latest.lock().expect("latest poisoned").as_ref(), &id)?;
+    saved_client(&state)?.unload_model(&id).await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,7 +354,7 @@ mod tests {
         // main thread. A sync command runs on the main thread, so taking the lock there can
         // deadlock against a publisher. Such commands must be `async`.
         let src = include_str!("commands.rs").replace("\r\n", "\n");
-        for name in ["save_settings", "get_snapshot"] {
+        for name in ["save_settings", "get_snapshot", "load_model", "unload_model"] {
             assert!(
                 src.contains(&format!("#[tauri::command]\npub async fn {name}(")),
                 "{name} must be an async command"
@@ -460,5 +500,39 @@ mod tests {
         assert_eq!(key_for_test(&store, None, "http://box:8080", None).unwrap(), None);
         assert_eq!(key_for_test(&store, Some(&saved), "http://typo:8080", Some(" new ".into())).unwrap().as_deref(), Some("new"));
         assert_eq!(key_for_test(&store, Some(&saved), "http://box:8080", Some("".into())).unwrap(), None);
+    }
+
+    #[test]
+    fn model_ids_must_be_in_the_latest_snapshot() {
+        let mut s = snap("h");
+        s.models.push(crate::monitor::ModelCard {
+            id: "qwen".into(),
+            name: "qwen".into(),
+            description: String::new(),
+            state: crate::state::ModelState::NotLoaded,
+            ttl_s: None,
+            ttl_remaining_s: None,
+            tok_s_history: vec![],
+            last_request_at_ms: None,
+        });
+        assert!(validate_model_id(Some(&s), "qwen").is_ok());
+        for bad in ["qwen/../x", "qwe", "", "QWEN", "other"] {
+            assert!(validate_model_id(Some(&s), bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_model_id(None, "qwen").is_err(), "no snapshot yet");
+    }
+
+    #[test]
+    fn rejected_ids_send_no_request() {
+        // The commands call validate_model_id before saved_client, so a rejected id cannot reach HTTP.
+        let src = include_str!("commands.rs").replace("
+", "
+");
+        for name in ["load_model", "unload_model"] {
+            let body = src.split(&format!("pub async fn {name}(")).nth(1).unwrap();
+            let v = body.find("validate_model_id(").unwrap();
+            let c = body.find("saved_client(").unwrap();
+            assert!(v < c, "{name} must validate before building a client");
+        }
     }
 }
