@@ -222,9 +222,9 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     h("div", { class: "tiles" }, tiles.requests.el, tiles.input.el, tiles.output.el, tiles.speed.el),
     histBox,
   );
-  const modelsView = h("div", { class: "models-view" }, toolbar, toast, grid, stats);
+  const modelsView = h("div", { class: "models-view" }, toolbar, grid, stats);
   const history = createHistory();
-  const element = h("main", { class: "dashboard" }, header, liveHint, banner, modelsView, history.element);
+  const element = h("main", { class: "dashboard" }, header, liveHint, banner, toast, modelsView, history.element);
 
   const cards = new Map<string, CardView>();
   let last: Snapshot | null = null;
@@ -258,12 +258,18 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     return last?.models.find((m) => m.id !== id && m.state.kind === "busy");
   }
 
+  const loading = new Set<string>();
+
   // Fire and forget: the poller shows Loading, then Idle. Only a failure is reported.
   const actions: CardActions = {
     load(card) {
+      if (loading.has(card.id)) return; // a load for this model is already pending
       const busy = busyOther(card.id);
       if (busy && !confirm(`${busy.name} is busy. Loading ${card.name} may swap it out. Load anyway?`)) return;
-      loadModel(card.id).catch((e) => showToast(`Could not load ${card.name}: ${String(e)}`));
+      loading.add(card.id);
+      loadModel(card.id)
+        .catch((e) => showToast(`Could not load ${card.name}: ${String(e)}`))
+        .finally(() => loading.delete(card.id));
     },
     unload(card, x, y) {
       openMenu(x, y, () => {

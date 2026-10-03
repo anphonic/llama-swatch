@@ -163,10 +163,16 @@ impl LlamaSwapClient {
     }
 
     /// Asks llama-swap to start `id` by requesting its upstream root. The call blocks until the
-    /// model is up (minutes, possibly); any 2xx is success and the body is ignored.
+    /// model is up (minutes, possibly). Callers pass only ids llama-swap itself listed, so any
+    /// answer below 500 means the upstream came up, even a 404 from one with no root page; the
+    /// body is ignored. 5xx, redirects, a rejected key and network errors are failures.
     pub async fn load_model(&self, id: &str) -> Result<(), ClientError> {
         let path = format!("/upstream/{}/", encode_segment(id)?);
-        Self::send(self.get(&path).timeout(LOAD_TIMEOUT)).await.map(drop)
+        match Self::send(self.get(&path).timeout(LOAD_TIMEOUT)).await {
+            Ok(_) | Err(ClientError::NotFound) => Ok(()),
+            Err(ClientError::Http(code)) if code < 500 => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn unload_model(&self, id: &str) -> Result<(), ClientError> {

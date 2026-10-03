@@ -58,10 +58,16 @@ export function createHistory(): History {
   const table = h("table", { class: "history-table" }, h("thead", {}, h("tr", {}, ...COLUMNS.map(([name, numeric]) => h("th", numeric ? { class: "num" } : {}, name)))), tbody);
   const element = h("section", { class: "history" }, toolbar, message, h("div", { class: "table-scroll" }, table));
 
+  // Rebuilding an open <select> closes its popup, so only touch it when the model set changed.
+  let optionKey = "\u0000";
   function renderSelect() {
     const models = [...new Set(rows.map((r) => r.model))].sort();
     if (filter !== ALL && !models.includes(filter)) models.push(filter);
-    select.replaceChildren(h("option", { value: ALL }, "All models"), ...models.map((m) => h("option", { value: m }, m)));
+    const key = models.join("\n");
+    if (key !== optionKey) {
+      optionKey = key;
+      select.replaceChildren(h("option", { value: ALL }, "All models"), ...models.map((m) => h("option", { value: m }, m)));
+    }
     select.value = filter;
   }
 
@@ -99,7 +105,8 @@ export function createHistory(): History {
     try {
       const fetched = await getActivity(LIMIT);
       if (mine !== gen) return;
-      rows = fetched;
+      // Newest first by id, whatever order the server used (monitor.rs sorts by id the same way).
+      rows = [...fetched].sort((a, b) => b.id - a.id);
       error = null;
     } catch (e) {
       if (mine !== gen) return;

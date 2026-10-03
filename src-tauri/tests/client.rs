@@ -232,17 +232,32 @@ async fn load_and_unload_redirects_are_reported_not_followed() {
 #[tokio::test]
 async fn load_and_unload_map_error_statuses() {
     let server = MockServer::start().await;
-    Mock::given(path("/upstream/gone/")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    Mock::given(path("/upstream/gone/")).respond_with(ResponseTemplate::new(502)).mount(&server).await;
     Mock::given(path("/api/models/unload/bad")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
     Mock::given(path("/upstream/locked/")).respond_with(ResponseTemplate::new(401)).mount(&server).await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
-    assert_eq!(client.load_model("gone").await, Err(ClientError::NotFound));
+    assert_eq!(client.load_model("gone").await, Err(ClientError::Http(502)));
     assert_eq!(client.unload_model("bad").await, Err(ClientError::Http(500)));
     assert_eq!(client.load_model("locked").await, Err(ClientError::Unauthorized));
     assert!(matches!(
         LlamaSwapClient::new(&closed_port_url(), None).unwrap().load_model("m").await,
         Err(ClientError::Unreachable(_))
     ));
+}
+
+#[tokio::test]
+async fn load_treats_upstream_4xx_as_loaded_but_not_5xx() {
+    let server = MockServer::start().await;
+    Mock::given(path("/upstream/noroot/")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    Mock::given(path("/upstream/teapot/")).respond_with(ResponseTemplate::new(418)).mount(&server).await;
+    Mock::given(path("/upstream/down/")).respond_with(ResponseTemplate::new(502)).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(client.load_model("noroot").await, Ok(()));
+    assert_eq!(client.load_model("teapot").await, Ok(()));
+    assert_eq!(client.load_model("down").await, Err(ClientError::Http(502)));
+    // unload keeps strict status handling
+    Mock::given(path("/api/models/unload/x")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    assert_eq!(client.unload_model("x").await, Err(ClientError::NotFound));
 }
 
 #[tokio::test]

@@ -525,9 +525,7 @@ mod tests {
     #[test]
     fn rejected_ids_send_no_request() {
         // The commands call validate_model_id before saved_client, so a rejected id cannot reach HTTP.
-        let src = include_str!("commands.rs").replace("
-", "
-");
+        let src = include_str!("commands.rs");
         for name in ["load_model", "unload_model"] {
             let body = src.split(&format!("pub async fn {name}(")).nth(1).unwrap();
             let v = body.find("validate_model_id(").unwrap();
