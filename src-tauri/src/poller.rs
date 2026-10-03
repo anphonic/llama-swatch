@@ -11,7 +11,7 @@ pub const ACTIVITY_LIMIT: u32 = 100;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Feature<T> {
     Available(T),
-    /// 404 (or, for `/api/version`, an undecodable body): not usable, do not retry.
+    /// 404 (or, for `/api/version`, any non-transient 4xx or undecodable body): not usable, do not retry.
     Unavailable,
     /// Transient failure: keep whatever we had.
     Failed,
@@ -34,16 +34,20 @@ impl<T> Feature<T> {
     }
 }
 
-/// `/api/version` classification. A malformed body (a proxy answering 200 with HTML, a
-/// changed shape) will not fix itself, so it is final like a 404; only transport errors
-/// and non-404 HTTP errors stay `Failed` (retried).
+/// `/api/version` classification. Only conditions that can plausibly clear on their own are
+/// `Failed` (retried): transport/unreachable errors, 5xx and 429. Everything else (404, any
+/// other 4xx including 400/401/403, a malformed body) will not fix itself without a settings
+/// change or reconnect, so it settles as `Unavailable`. Scoped to version only: the metrics
+/// endpoints keep `from_result`, where any non-404 error means "keep the previous value".
 fn version_feature(r: Result<VersionInfo, ClientError>) -> Feature<VersionInfo> {
     match r {
-        Err(ClientError::Decode(m)) => {
-            log_decode("/api/version", &ClientError::Decode(m));
+        Ok(v) => Feature::Available(v),
+        Err(ClientError::Unreachable(_)) => Feature::Failed,
+        Err(ClientError::Http(code)) if code >= 500 || code == 429 => Feature::Failed,
+        Err(e) => {
+            log_decode("/api/version", &e);
             Feature::Unavailable
         }
-        other => Feature::from_result("/api/version", other),
     }
 }
 

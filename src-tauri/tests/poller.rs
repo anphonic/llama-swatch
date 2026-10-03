@@ -53,6 +53,28 @@ async fn version_404_is_unavailable_and_500_is_failed() {
     assert_eq!(unwrap_ok(poll_once(&client, false, true).await).version, Some(Feature::Failed));
 }
 
+async fn version_outcome(status: u16) -> Option<Feature<llama_swap_monitor_lib::api::VersionInfo>> {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(status)).with_priority(1).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    unwrap_ok(poll_once(&client, false, true).await).version
+}
+
+#[tokio::test]
+async fn version_401_and_other_4xx_are_final() {
+    for status in [400, 401, 403, 410, 422] {
+        assert_eq!(version_outcome(status).await, Some(Feature::Unavailable), "status {status}");
+    }
+}
+
+#[tokio::test]
+async fn version_429_and_5xx_are_retried() {
+    for status in [429, 500, 503] {
+        assert_eq!(version_outcome(status).await, Some(Feature::Failed), "status {status}");
+    }
+}
+
 #[tokio::test]
 async fn missing_metrics_endpoints_are_unavailable() {
     let server = MockServer::start().await;

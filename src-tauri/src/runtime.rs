@@ -32,7 +32,9 @@ pub struct MonitorConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub poll_interval: Duration,
-    /// How often to retry `/api/version` after a transient failure (not every tick).
+    /// Minimum gap before retrying `/api/version` after a transient failure. The retry only
+    /// runs on a poll tick, so it happens at the first tick at least this long after the
+    /// failure (i.e. every max(`version_retry`, poll interval)), not on a timer of its own.
     pub version_retry: Duration,
     pub thresholds: Thresholds,
 }
@@ -99,7 +101,8 @@ pub fn start(cfg: MonitorConfig, sink: Arc<dyn SnapshotSink>) -> Result<MonitorH
 async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Duration, version_retry: Duration) {
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
     let mut need_version = true;
-    // After a transient /api/version failure, wait this long before asking again.
+    // After a transient /api/version failure, retry at the first poll tick at or after this
+    // instant (at least `version_retry` later), i.e. every max(version_retry, poll interval).
     let mut version_retry_at: Option<Instant> = None;
     let mut models_fetched_at: Option<Instant> = None;
     loop {
@@ -110,7 +113,7 @@ async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Durat
             PollOutcome::Ok(d) => {
                 backoff.reset();
                 // Version is fetched once per (re)connection. Success, 404 and malformed JSON
-                // settle it; a transient failure is retried, but only every `version_retry`.
+                // settle it; a transient failure is retried at the first poll tick at least `version_retry` later.
                 match d.version {
                     Some(Feature::Failed) => version_retry_at = Some(Instant::now() + version_retry),
                     Some(_) => need_version = false,
