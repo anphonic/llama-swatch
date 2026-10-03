@@ -1,0 +1,28 @@
+[package]
+name = "llama-swap-monitor"
+version = "0.1.0"
+description = "Desktop monitor for llama-swap"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "llama_swap_monitor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+futures-util = "0.3"
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"

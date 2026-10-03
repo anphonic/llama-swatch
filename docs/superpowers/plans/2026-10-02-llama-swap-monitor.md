@@ -107,7 +107,7 @@ Differences from the spec's unit list, made for focus:
 - [ ] **Step 1: Create a working branch**
 
 ```bash
-git switch -c phase-1
+git switch phase-1 2>/dev/null || git switch -c phase-1
 ```
 
 - [ ] **Step 2: Write `package.json`**
@@ -3056,9 +3056,9 @@ async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Durat
         let delay = match &outcome {
             PollOutcome::Ok(d) => {
                 backoff.reset();
-                if d.version.is_some() {
-                    need_version = false;
-                }
+                // Spec: version is fetched once per (re)connection. Clear the flag even when
+                // /api/version 404s, or older llama-swap builds get re-asked every tick.
+                need_version = false;
                 if d.models.is_some() {
                     models_fetched_at = Some(Instant::now());
                 }
@@ -4418,7 +4418,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   let last: Snapshot | null = null;
 
   function showBanner(text: string, withSettingsButton: boolean) {
-    banner.replaceChildren(h("span", {}, text), withSettingsButton ? openSettings : null);
+    banner.replaceChildren(h("span", {}, text), ...(withSettingsButton ? [openSettings] : []));
     banner.hidden = false;
   }
 
