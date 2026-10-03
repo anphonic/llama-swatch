@@ -261,11 +261,38 @@ pub fn validate_model_id(snapshot: Option<&Snapshot>, id: &str) -> Result<(), St
     }
 }
 
-/// Client for the saved URL and its saved key; the key never leaves this function except into the client.
-fn saved_client(state: &AppState) -> Result<LlamaSwapClient, String> {
-    let settings = load_settings(&state.config_path).ok_or("not configured")?;
+/// Validates `id` against the snapshot AND checks that the snapshot came from the server the
+/// request will go to. `save_settings` writes the new URL before the monitor restart clears
+/// `latest`, so without the host check an id validated against the old server could be sent
+/// to the new one.
+pub fn validate_for(snapshot: Option<&Snapshot>, id: &str, saved_base_url: &str) -> Result<(), String> {
+    validate_model_id(snapshot, id)?;
+    match snapshot {
+        Some(s) if s.host.trim_end_matches('/') == saved_base_url.trim_end_matches('/') => Ok(()),
+        _ => Err("settings changed, try again".into()),
+    }
+}
+
+/// Client for the given saved settings and their saved key; the key never leaves this function
+/// except into the client.
+fn client_for(state: &AppState, settings: &Settings) -> Result<LlamaSwapClient, String> {
     let key = state.secrets.get(&settings.base_url).ok().flatten();
     LlamaSwapClient::new(&settings.base_url, key).map_err(|e| e.to_string())
+}
+
+/// Client for the saved URL and its saved key.
+fn saved_client(state: &AppState) -> Result<LlamaSwapClient, String> {
+    let settings = load_settings(&state.config_path).ok_or("not configured")?;
+    client_for(state, &settings)
+}
+
+/// Client for a model command: the id is checked against the latest snapshot, and that snapshot
+/// must come from the saved URL, before the keychain is read or any request is built. The
+/// `latest` lock is held only for the check (never across an `.await`).
+fn model_client(state: &AppState, id: &str) -> Result<LlamaSwapClient, String> {
+    let settings = load_settings(&state.config_path).ok_or("not configured")?;
+    validate_for(state.latest.lock().expect("latest poisoned").as_ref(), id, &settings.base_url)?;
+    client_for(state, &settings)
 }
 
 /// Recent requests, newest first. Async for the same reason as `save_settings`.
@@ -279,14 +306,12 @@ pub async fn get_activity(state: State<'_, AppState>, limit: u32) -> Result<Vec<
 /// Blocks until the model is up (possibly minutes); the webview fires it and watches snapshots.
 #[tauri::command]
 pub async fn load_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    validate_model_id(state.latest.lock().expect("latest poisoned").as_ref(), &id)?;
-    saved_client(&state)?.load_model(&id).await.map_err(|e| e.to_string())
+    model_client(&state, &id)?.load_model(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn unload_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    validate_model_id(state.latest.lock().expect("latest poisoned").as_ref(), &id)?;
-    saved_client(&state)?.unload_model(&id).await.map_err(|e| e.to_string())
+    model_client(&state, &id)?.unload_model(&id).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -505,16 +530,7 @@ mod tests {
     #[test]
     fn model_ids_must_be_in_the_latest_snapshot() {
         let mut s = snap("h");
-        s.models.push(crate::monitor::ModelCard {
-            id: "qwen".into(),
-            name: "qwen".into(),
-            description: String::new(),
-            state: crate::state::ModelState::NotLoaded,
-            ttl_s: None,
-            ttl_remaining_s: None,
-            tok_s_history: vec![],
-            last_request_at_ms: None,
-        });
+        s.models.push(model("qwen"));
         assert!(validate_model_id(Some(&s), "qwen").is_ok());
         for bad in ["qwen/../x", "qwe", "", "QWEN", "other"] {
             assert!(validate_model_id(Some(&s), bad).is_err(), "{bad:?}");
@@ -522,15 +538,48 @@ mod tests {
         assert!(validate_model_id(None, "qwen").is_err(), "no snapshot yet");
     }
 
+    fn model(id: &str) -> crate::monitor::ModelCard {
+        crate::monitor::ModelCard {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            state: crate::state::ModelState::NotLoaded,
+            ttl_s: None,
+            ttl_remaining_s: None,
+            tok_s_history: vec![],
+            last_request_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn validate_for_binds_the_id_to_the_snapshot_host() {
+        let mut s = snap("http://box:8080");
+        s.models.push(model("qwen"));
+        assert!(validate_for(Some(&s), "qwen", "http://box:8080").is_ok(), "matching host");
+        assert_eq!(
+            validate_for(Some(&s), "qwen", "http://other:8080").unwrap_err(),
+            "settings changed, try again",
+            "id valid but snapshot is from a different host"
+        );
+        assert!(validate_for(Some(&s), "nope", "http://box:8080").is_err(), "unknown id");
+        assert!(validate_for(None, "qwen", "http://box:8080").is_err(), "no snapshot");
+    }
+
     #[test]
     fn rejected_ids_send_no_request() {
-        // The commands call validate_model_id before saved_client, so a rejected id cannot reach HTTP.
+        // The commands build their client through model_client, which validates (id and host)
+        // before reading the key or building a client, so a rejected id cannot reach HTTP.
         let src = include_str!("commands.rs");
         for name in ["load_model", "unload_model"] {
             let body = src.split(&format!("pub async fn {name}(")).nth(1).unwrap();
-            let v = body.find("validate_model_id(").unwrap();
-            let c = body.find("saved_client(").unwrap();
-            assert!(v < c, "{name} must validate before building a client");
+            let body = &body[..body.find("
+}").unwrap()];
+            assert!(body.contains("model_client("), "{name} must use model_client");
+            assert!(!body.contains("saved_client("), "{name} must not bypass validation");
         }
+        let body = src.split("fn model_client(").nth(1).unwrap();
+        let v = body.find("validate_for(").unwrap();
+        let c = body.find("client_for(").unwrap();
+        assert!(v < c, "model_client must validate before reading the key");
     }
 }
