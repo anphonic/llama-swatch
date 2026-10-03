@@ -111,10 +111,7 @@ impl LlamaSwapClient {
             StatusCode::NOT_FOUND => Err(ClientError::NotFound),
             s if s.is_redirection() => {
                 let loc = resp.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok());
-                Err(ClientError::Redirect(match loc {
-                    Some(l) => format!("llama-swap redirected to {l} \u{2014} use that URL instead"),
-                    None => "llama-swap redirected the request \u{2014} check the URL (http vs https)".into(),
-                }))
+                Err(ClientError::Redirect(redirect_advice(resp.url(), loc)))
             }
             s => Err(ClientError::Http(s.as_u16())),
         }
@@ -161,11 +158,50 @@ impl LlamaSwapClient {
     }
 }
 
+/// Endpoint paths this client requests; used to recover the base URL from a redirect target.
+const ENDPOINTS: &[&str] = &[
+    "/health",
+    "/api/version",
+    "/running",
+    "/v1/models",
+    "/api/metrics/stats",
+    "/api/metrics/activity",
+    "/api/events",
+];
+
+/// Builds the "use this URL instead" message for a 3xx. The Location is resolved against the request
+/// URL, the endpoint we asked for is stripped to get a base, and that base is normalized. When no
+/// clean base can be derived the message names only scheme and host, never the raw Location.
+fn redirect_advice(request: &reqwest::Url, location: Option<&str>) -> String {
+    const GENERIC: &str = "check the URL (http vs https)";
+    let target = location.and_then(|l| request.join(l).ok()).filter(|u| matches!(u.scheme(), "http" | "https"));
+    let Some(target) = target else {
+        return format!("llama-swap redirected the request \u{2014} {GENERIC}");
+    };
+    let endpoint = ENDPOINTS.iter().find(|e| request.path().ends_with(**e));
+    let path = target.path().trim_end_matches('/');
+    let base = endpoint.and_then(|e| path.strip_suffix(*e)).and_then(|prefix| {
+        let mut u = target.clone();
+        u.set_path(prefix);
+        crate::config::normalize_base_url(u.as_str()).ok()
+    });
+    match base {
+        Some(base) => format!("llama-swap redirected to {base} \u{2014} use that URL instead"),
+        None => {
+            let host = target.host_str().unwrap_or("another host");
+            let port = target.port().map(|p| format!(":{p}")).unwrap_or_default();
+            format!("llama-swap redirected to {}://{host}{port} \u{2014} {GENERIC}", target.scheme())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum TestResult {
     Ok { version: String },
     Unreachable { message: String },
+    /// The server answered with a 3xx; `message` says which URL to use instead.
+    Redirect { message: String },
     Unauthorized,
     NotLlamaSwap { message: String },
 }
@@ -175,9 +211,8 @@ pub enum TestResult {
 /// falls back to `/running`.
 pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
     match client.health().await {
-        Err(ClientError::Unreachable(message)) | Err(ClientError::Redirect(message)) => {
-            return TestResult::Unreachable { message }
-        }
+        Err(ClientError::Unreachable(message)) => return TestResult::Unreachable { message },
+        Err(ClientError::Redirect(message)) => return TestResult::Redirect { message },
         Err(ClientError::Unauthorized) => return TestResult::Unauthorized,
         Err(e) => return TestResult::NotLlamaSwap { message: format!("/health: {e}") },
         Ok((body, _)) if body.trim() != "OK" => {
@@ -189,9 +224,8 @@ pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
         Ok(v) if !v.version.is_empty() => TestResult::Ok { version: v.version },
         Ok(_) => TestResult::NotLlamaSwap { message: "/api/version has no version".into() },
         Err(ClientError::Unauthorized) => TestResult::Unauthorized,
-        Err(ClientError::Unreachable(message)) | Err(ClientError::Redirect(message)) => {
-            TestResult::Unreachable { message }
-        }
+        Err(ClientError::Unreachable(message)) => TestResult::Unreachable { message },
+        Err(ClientError::Redirect(message)) => TestResult::Redirect { message },
         Err(ClientError::NotFound) => match client.running().await {
             Ok(_) => TestResult::Ok { version: "unknown".into() },
             Err(ClientError::Unauthorized) => TestResult::Unauthorized,
@@ -205,11 +239,11 @@ pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
 mod tests {
     use super::*;
 
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{any, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
-    async fn redirect_is_not_followed_and_reports_location() {
+    async fn redirect_is_not_followed_and_reports_base_url() {
         let server = MockServer::start().await;
         let target = MockServer::start().await;
         Mock::given(method("GET"))
@@ -218,18 +252,57 @@ mod tests {
             .expect(2) // one per call below (health, then test_connection); never a retry or follow
             .mount(&server)
             .await;
-        Mock::given(header("authorization", "Bearer k")).respond_with(ResponseTemplate::new(200).set_body_string("OK")).expect(0).mount(&target).await;
+        // Matches ANY request: if a redirect were followed, this would be hit (and trip expect(0)).
+        Mock::given(any()).respond_with(ResponseTemplate::new(200).set_body_string("OK")).expect(0).mount(&target).await;
 
         let c = LlamaSwapClient::new(&server.uri(), Some("k".into())).unwrap();
         let err = c.health().await.unwrap_err();
         let ClientError::Redirect(msg) = &err else { panic!("expected Redirect, got {err:?}") };
-        assert!(msg.contains(&format!("{}/health", target.uri())), "{msg}");
+        assert!(msg.contains(&format!("redirected to {} ", target.uri())), "{msg}");
+        assert!(!msg.contains("/health"), "{msg}");
         assert!(msg.contains("use that URL instead"), "{msg}");
         match test_connection(&c).await {
-            TestResult::Unreachable { message } => assert!(message.contains("redirected to"), "{message}"),
+            TestResult::Redirect { message } => assert!(message.contains("redirected to"), "{message}"),
             other => panic!("{other:?}"),
         }
-        // wiremock verifies expect(1)/expect(0) on drop: no second request, no key leak.
+        // wiremock verifies expect(2)/expect(0) on drop: no extra request, nothing reached the target.
+    }
+
+    fn advice(request: &str, location: Option<&str>) -> String {
+        redirect_advice(&reqwest::Url::parse(request).unwrap(), location)
+    }
+
+    #[test]
+    fn redirect_advice_suggests_base_not_endpoint() {
+        // absolute cross-scheme
+        let m = advice("http://h/health", Some("https://h/health"));
+        assert!(m.contains("redirected to https://h \u{2014} use that URL instead"), "{m}");
+        // relative Location resolved against the request URL
+        let m = advice("http://h:8080/api/version", Some("/api/version"));
+        assert!(m.contains("redirected to http://h:8080 "), "{m}");
+        let m = advice("http://h/health", Some("//other/health"));
+        assert!(m.contains("redirected to http://other "), "{m}");
+        // proxy prefix preserved
+        let m = advice("http://h/llama/health", Some("https://h/llama/health"));
+        assert!(m.contains("redirected to https://h/llama "), "{m}");
+        // query on the request path does not defeat endpoint detection
+        let m = advice("http://h/api/metrics/activity?limit=5", Some("https://h/api/metrics/activity?limit=5"));
+        assert!(m.contains("redirected to https://h "), "{m}");
+    }
+
+    #[test]
+    fn redirect_advice_falls_back_without_echoing_location() {
+        // endpoint not recoverable from the target
+        let m = advice("http://h/health", Some("https://h/login?next=%2Fhealth"));
+        assert!(m.contains("https://h"), "{m}");
+        assert!(!m.contains("login") && !m.contains("use that URL instead"), "{m}");
+        assert!(m.contains("http vs https"), "{m}");
+        // not http(s)
+        let m = advice("http://h/health", Some("ftp://x/health"));
+        assert!(!m.contains("ftp"), "{m}");
+        // missing / unparseable Location
+        assert!(advice("http://h/health", None).contains("http vs https"));
+        assert!(advice("http://h/health", Some("http://[bad")).contains("http vs https"));
     }
 
     #[test]

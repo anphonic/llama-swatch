@@ -163,10 +163,9 @@ function describeResult(r: TestResult, ctx: KeyContext): { ok: boolean; text: st
     case "ok":
       return { ok: true, text: `Connected — llama-swap ${r.version}` };
     case "unreachable":
-      // A redirect message already says what to do; don't bury it under "can't reach".
-      return /redirected to/i.test(r.message)
-        ? { ok: false, text: `${r.message}. Edit the URL above and test again.` }
-        : { ok: false, text: `Can't reach that address: ${r.message}` };
+      return { ok: false, text: `Can't reach that address: ${r.message}` };
+    case "redirect":
+      return { ok: false, text: `${r.message}. Edit the URL above and test again.` };
     case "unauthorized":
       return {
         ok: false,
