@@ -23,3 +23,10 @@ export function formatCount(n: number): string {
 export function formatAgo(ms: number, now: number = Date.now()): string {
   return `${formatDuration((now - ms) / 1000)} ago`;
 }
+
+/** Request durations: milliseconds under a second, one decimal under ten, then `formatDuration`. */
+export function formatMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)} s`;
+  return formatDuration(ms / 1000);
+}

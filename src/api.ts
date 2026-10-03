@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Settings, SettingsView, Snapshot, TestResult } from "./types";
+import type { ActivityRow, Settings, SettingsView, Snapshot, TestResult } from "./types";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
 
@@ -15,6 +15,13 @@ export const testConnection = (baseUrl: string, apiKey: string | null) =>
 export const isSavedUrl = (baseUrl: string) => invoke<boolean>("is_saved_url", { baseUrl });
 
 export const getSnapshot = () => invoke<Snapshot | null>("get_snapshot");
+
+export const getActivity = (limit: number) => invoke<ActivityRow[]>("get_activity", { limit });
+
+/** Resolves when llama-swap has the model up (can take minutes); rejects with a short message. */
+export const loadModel = (id: string) => invoke<void>("load_model", { id });
+
+export const unloadModel = (id: string) => invoke<void>("unload_model", { id });
 
 export const onSnapshot = (cb: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("snapshot", (e) => cb(e.payload));
