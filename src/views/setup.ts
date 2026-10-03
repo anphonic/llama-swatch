@@ -1,4 +1,4 @@
-import { saveSettings, testConnection } from "../api";
+import { isSavedUrl, saveSettings, testConnection } from "../api";
 import { h } from "../dom";
 import type { Settings, SettingsView, TestResult } from "../types";
 
@@ -67,9 +67,12 @@ export function renderSetup(
     },
   });
 
+  const controls: Array<HTMLInputElement | HTMLButtonElement> = [
+    url, key, removeKey, poll, load, stop, firstByte, stall, testBtn, saveBtn,
+  ];
+  if (cancelBtn) controls.push(cancelBtn);
   const setBusy = (busy: boolean) => {
-    testBtn.disabled = busy;
-    saveBtn.disabled = busy;
+    for (const c of controls) c.disabled = busy;
   };
 
   const showStatus = (text: string, kind: "ok" | "error" | "pending") => {
@@ -77,39 +80,65 @@ export function renderSetup(
     status.dataset.kind = kind;
   };
 
-  const runTest = async (): Promise<boolean> => {
-    setBusy(true);
+  /** Everything the user entered, frozen at the moment they asked. */
+  interface Entered {
+    baseUrl: string;
+    apiKey: string | null;
+    settings: Settings;
+  }
+  const capture = (): Entered => {
+    const settings = collect();
+    return { baseUrl: settings.baseUrl, apiKey: apiKeyValue(), settings };
+  };
+
+  // The form is detached when the app swaps views; a continuation that wakes up
+  // after that must not touch the UI or save anything.
+  const alive = () => form.isConnected;
+
+  /** Tests exactly what was captured. Returns null if the view went away meanwhile. */
+  const runTest = async (entered: Entered): Promise<boolean | null> => {
     showStatus("Testing…", "pending");
     try {
-      const result = await testConnection(url.value, apiKeyValue());
-      const keyBlank = apiKeyValue() === null;
-      const sameUrl = normalizeUrl(url.value) === normalizeUrl(s.baseUrl);
+      const result = await testConnection(entered.baseUrl, entered.apiKey);
+      const keyBlank = entered.apiKey === null;
+      // null = the backend could not answer; then claim neither "sent" nor "not sent".
+      const sameUrl = view.hasKey && keyBlank ? await isSavedUrl(entered.baseUrl).catch((): null => null) : false;
+      if (!alive()) return null;
       const { ok, text } = describeResult(result, {
-        savedKeySent: view.hasKey && keyBlank && sameUrl,
-        savedKeyNotSent: view.hasKey && keyBlank && !sameUrl,
+        savedKeySent: view.hasKey && keyBlank && sameUrl === true,
+        savedKeyNotSent: view.hasKey && keyBlank && sameUrl === false,
       });
       showStatus(text, ok ? "ok" : "error");
       return ok;
     } catch (e) {
+      if (!alive()) return null;
       showStatus(String(e), "error");
       return false;
-    } finally {
-      setBusy(false);
     }
   };
 
-  testBtn.addEventListener("click", () => void runTest());
+  testBtn.addEventListener("click", async () => {
+    const entered = capture();
+    setBusy(true);
+    try {
+      await runTest(entered);
+    } finally {
+      if (alive()) setBusy(false);
+    }
+  });
   cancelBtn?.addEventListener("click", () => onCancel?.());
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (!(await runTest())) return;
+    const entered = capture();
     setBusy(true);
     try {
-      onSaved(await saveSettings(collect(), apiKeyValue()));
+      if ((await runTest(entered)) !== true) return;
+      const saved = await saveSettings(entered.settings, entered.apiKey);
+      if (alive()) onSaved(saved);
     } catch (err) {
-      showStatus(String(err), "error");
+      if (alive()) showStatus(String(err), "error");
     } finally {
-      setBusy(false);
+      if (alive()) setBusy(false);
     }
   });
 
@@ -120,26 +149,6 @@ export function renderSetup(
     h("p", { class: "muted" }, "Point the monitor at your llama-swap instance. Save checks the connection first."),
     form,
   );
-}
-
-function normalizeUrl(u: string): string {
-  const trimmed = u.trim();
-  const withScheme = trimmed.includes("://") ? trimmed : `http://${trimmed}`;
-  try {
-    const url = new URL(withScheme);
-    if (
-      (url.protocol !== "http:" && url.protocol !== "https:") ||
-      !url.hostname ||
-      url.username ||
-      url.password
-    ) {
-      return "";
-    }
-    const path = url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "");
-    return `${url.origin}${path}`;
-  } catch {
-    return "";
-  }
 }
 
 interface KeyContext {

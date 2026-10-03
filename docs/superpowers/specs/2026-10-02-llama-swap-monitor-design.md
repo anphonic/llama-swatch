@@ -101,7 +101,11 @@ structs use `#[serde(default)]` and ignore unknown fields so different llama-swa
 versions parse. Errors map to `ClientError::{Unreachable, Unauthorized, NotFound, Http(u16), Decode}`.
 
 **`poller.rs`** — every `poll_interval_ms` (default 2000): `health`, `running`, `stats`,
-`activity` concurrently; `models` every 30 s; `version` once per (re)connection.
+`activity` concurrently; `models` every 30 s; `version` once per (re)connection (a 404, any other non-transient 4xx such as
+400/401/403, or a malformed body settles it; transport errors, 5xx and 429 are retried at the first poll tick at least
+30 s after the failure, i.e. every max(30 s, poll interval), not every tick). `/v1/models` records whose
+`meta.llamaswap.type` is not `model` (alias, selector, peer, profile) are ignored; an absent type
+(older llama-swap) counts as a model.
 Backoff on `Unreachable`: 2 → 4 → 8 → 16 → 30 s cap, reset on success.
 
 **`events.rs`** — holds one streaming GET to `/api/events`, parses SSE frames
@@ -158,6 +162,10 @@ it), so they restart when the app restarts.
 **`commands.rs`** — Tauri commands:
 - `get_settings() -> SettingsView` (includes `has_key`, never the key)
 - `save_settings(settings, api_key: Option<String>)` — restarts the monitor
+- `is_saved_url(base_url) -> bool` — whether the URL normalizes to the saved one (so the saved key
+  would be reused); never reads the key
+- Commands that take the `latest` snapshot lock (`save_settings`, `get_snapshot`) are `async` so they
+  never run on the main thread while a publisher emits under that lock
 - `test_connection(base_url, api_key) -> TestResult` — `/health` then `/api/version`;
   returns `Ok{version}` | `Unreachable` | `Unauthorized` | `NotLlamaSwap`
 

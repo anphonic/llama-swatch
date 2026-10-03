@@ -21,7 +21,7 @@ async fn full_poll_against_healthy_server() {
     let d = unwrap_ok(poll_once(&client, true, true).await);
     assert_eq!(d.running.len(), 2);
     assert_eq!(d.models.unwrap().len(), 3);
-    assert_eq!(d.version.unwrap().version, "v188");
+    assert!(matches!(d.version, Some(Feature::Available(ref v)) if v.version == "v188"));
     assert!(matches!(d.stats, Feature::Available(ref s) if s.total_requests == 42));
     assert!(matches!(d.activity, Feature::Available(ref a) if a.len() == 3));
 }
@@ -36,6 +36,43 @@ async fn skips_models_and_version_when_not_wanted() {
     assert!(d.version.is_none());
     let requests = server.received_requests().await.unwrap();
     assert!(!requests.iter().any(|r| r.url.path() == "/v1/models" || r.url.path() == "/api/version"));
+}
+
+#[tokio::test]
+async fn version_404_is_unavailable_and_500_is_failed() {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(404)).with_priority(1).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(unwrap_ok(poll_once(&client, false, true).await).version, Some(Feature::Unavailable));
+
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(500)).with_priority(1).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(unwrap_ok(poll_once(&client, false, true).await).version, Some(Feature::Failed));
+}
+
+async fn version_outcome(status: u16) -> Option<Feature<llama_swap_monitor_lib::api::VersionInfo>> {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(status)).with_priority(1).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    unwrap_ok(poll_once(&client, false, true).await).version
+}
+
+#[tokio::test]
+async fn version_401_and_other_4xx_are_final() {
+    for status in [400, 401, 403, 410, 422] {
+        assert_eq!(version_outcome(status).await, Some(Feature::Unavailable), "status {status}");
+    }
+}
+
+#[tokio::test]
+async fn version_429_and_5xx_are_retried() {
+    for status in [429, 500, 503] {
+        assert_eq!(version_outcome(status).await, Some(Feature::Failed), "status {status}");
+    }
 }
 
 #[tokio::test]

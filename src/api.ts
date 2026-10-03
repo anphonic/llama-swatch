@@ -11,6 +11,9 @@ export const saveSettings = (settings: Settings, apiKey: string | null) =>
 export const testConnection = (baseUrl: string, apiKey: string | null) =>
   invoke<TestResult>("test_connection", { baseUrl, apiKey });
 
+/** Whether `baseUrl` normalizes (backend rules) to the saved URL, i.e. would reuse the saved key. */
+export const isSavedUrl = (baseUrl: string) => invoke<boolean>("is_saved_url", { baseUrl });
+
 export const getSnapshot = () => invoke<Snapshot | null>("get_snapshot");
 
 export const onSnapshot = (cb: (s: Snapshot) => void): Promise<UnlistenFn> =>

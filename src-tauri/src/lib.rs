@@ -32,6 +32,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::test_connection,
+            commands::is_saved_url,
             commands::get_snapshot
         ])
         .run(tauri::generate_context!())

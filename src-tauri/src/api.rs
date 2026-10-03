@@ -56,6 +56,40 @@ pub struct ModelEntry {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Absent on older llama-swap versions and on `null`.
+    #[serde(deserialize_with = "null_default")]
+    pub meta: ModelMeta,
+}
+
+impl ModelEntry {
+    /// True for a real, locally configured model. `/v1/models` also lists
+    /// aliases (when `includeAliasesInList` is set), selectors, peer models and
+    /// profile pins under `meta.llamaswap.type`; none of those can ever be
+    /// loaded as such, so they must not become cards. An absent type means an
+    /// older llama-swap that lists only models. Unknown future types are excluded
+    /// on purpose: a running model still appears through `/running`.
+    pub fn is_local_model(&self) -> bool {
+        matches!(self.meta.llamaswap.kind.as_str(), "" | "model")
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ModelMeta {
+    #[serde(deserialize_with = "null_default")]
+    pub llamaswap: LlamaSwapMeta,
+}
+
+/// llama-swap's own record metadata. Only the discriminator is read.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct LlamaSwapMeta {
+    /// One of `model`, `alias`, `peer`, `selector`, `profile`; empty on older versions.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// For `alias` records: the canonical model they point at.
+    #[serde(rename = "modelID")]
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -149,6 +183,17 @@ mod tests {
         let ids: Vec<&str> = m.data.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["embed", "gemma-12b", "qwen3-30b"]);
         assert_eq!(m.data[1].name, "Gemma 12B");
+    }
+
+    #[test]
+    fn parses_llamaswap_record_types_and_tolerates_missing_meta() {
+        let m: ModelsResponse = serde_json::from_str(include_str!("../tests/fixtures/models_mixed.json")).unwrap();
+        let kinds: Vec<(&str, bool)> = m.data.iter().map(|e| (e.id.as_str(), e.is_local_model())).collect();
+        assert_eq!(
+            kinds,
+            [("gemma-12b", true), ("gemma", false), ("fast", false), ("peer1/big", false), ("pinned", false), ("legacy", true), ("nometa", true)]
+        );
+        assert_eq!(m.data[1].meta.llamaswap.model_id, "gemma-12b");
     }
 
     #[test]

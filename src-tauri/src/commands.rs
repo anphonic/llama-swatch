@@ -129,12 +129,38 @@ struct TauriSink {
 
 impl SnapshotSink for TauriSink {
     fn emit(&self, snapshot: &Snapshot) {
-        if self.generation.load(Ordering::SeqCst) != self.mine {
-            return;
-        }
-        *self.latest.lock().expect("latest poisoned") = Some(snapshot.clone());
-        let _ = self.app.emit("snapshot", snapshot);
+        publish_if_current(&self.generation, self.mine, &self.latest, snapshot, |s| {
+            let _ = self.app.emit("snapshot", s);
+        });
     }
+}
+
+/// Starts a new monitor generation. Bumping and clearing happen under the
+/// `latest` lock, the same lock `publish_if_current` holds, so a publisher
+/// either finishes before the restart or sees the new generation.
+pub fn begin_generation(generation: &AtomicU64, latest: &Mutex<Option<Snapshot>>) -> u64 {
+    let mut guard = latest.lock().expect("latest poisoned");
+    let next = generation.fetch_add(1, Ordering::SeqCst) + 1;
+    *guard = None;
+    next
+}
+
+/// Generation check, `latest` write and emit as one critical section, so a stale
+/// task can never write or emit after a restart. `emit` must not block or call
+/// back into anything that takes the `latest` lock (Tauri's `emit` only queues).
+pub fn publish_if_current(
+    generation: &AtomicU64,
+    mine: u64,
+    latest: &Mutex<Option<Snapshot>>,
+    snapshot: &Snapshot,
+    emit: impl FnOnce(&Snapshot),
+) {
+    let mut guard = latest.lock().expect("latest poisoned");
+    if generation.load(Ordering::SeqCst) != mine {
+        return;
+    }
+    *guard = Some(snapshot.clone());
+    emit(snapshot);
 }
 
 pub fn restart_monitor(app: &AppHandle, state: &AppState, settings: &Settings, key: Option<String>) -> Result<(), String> {
@@ -142,14 +168,14 @@ pub fn restart_monitor(app: &AppHandle, state: &AppState, settings: &Settings, k
     if let Some(old) = guard.take() {
         old.stop();
     }
-    let mine = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    *state.latest.lock().expect("latest poisoned") = None;
+    let mine = begin_generation(&state.generation, &state.latest);
     let sink = Arc::new(TauriSink { app: app.clone(), latest: state.latest.clone(), generation: state.generation.clone(), mine });
     let handle = runtime::start(
         MonitorConfig {
             base_url: settings.base_url.clone(),
             api_key: key,
             poll_interval: Duration::from_millis(settings.poll_interval_ms),
+            version_retry: runtime::MODELS_REFRESH,
             thresholds: settings.thresholds,
         },
         sink,
@@ -170,8 +196,12 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsView {
     SettingsView { configured: current.is_some(), settings: current.unwrap_or_default(), has_key }
 }
 
+/// INVARIANT: every command that takes the `latest` lock must be `async`. `publish_if_current`
+/// emits under that lock, and with Tauri's `tracing` feature `emit` blocks until the main
+/// thread services it; a sync command runs on the main thread and would deadlock waiting for
+/// the lock a publisher holds. Async commands run on the async runtime, never the main thread.
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
     settings: Settings,
@@ -197,9 +227,26 @@ pub async fn test_connection(
     Ok(client::test_connection(&client).await)
 }
 
+/// True only when `base_url` normalizes successfully to the saved URL. Never
+/// reads the key.
+pub fn url_matches_saved(base_url: &str, saved: Option<&Settings>) -> bool {
+    match (normalize_base_url(base_url), saved) {
+        (Ok(url), Some(s)) => url == s.base_url,
+        _ => false,
+    }
+}
+
+/// Lets the UI ask whether an edited URL is the saved one (and so would reuse
+/// the saved key) without duplicating the normalization rules.
 #[tauri::command]
-pub fn get_snapshot(state: State<'_, AppState>) -> Option<Snapshot> {
-    state.latest.lock().expect("latest poisoned").clone()
+pub fn is_saved_url(state: State<'_, AppState>, base_url: String) -> bool {
+    url_matches_saved(&base_url, load_settings(&state.config_path).as_ref())
+}
+
+/// Async for the same reason as `save_settings` (see the invariant there).
+#[tauri::command]
+pub async fn get_snapshot(state: State<'_, AppState>) -> Result<Option<Snapshot>, String> {
+    Ok(state.latest.lock().expect("latest poisoned").clone())
 }
 
 #[cfg(test)]
@@ -209,6 +256,82 @@ mod tests {
 
     fn settings(url: &str) -> Settings {
         Settings { base_url: url.into(), ..Default::default() }
+    }
+
+    fn snap(host: &str) -> Snapshot {
+        crate::monitor::MonitorState::new(host).snapshot(
+            std::time::Instant::now(),
+            0,
+            &crate::state::Thresholds::default(),
+        )
+    }
+
+    #[test]
+    fn stale_generation_cannot_publish_after_restart() {
+        let latest = Mutex::new(None);
+        let generation = AtomicU64::new(0);
+        let mine = begin_generation(&generation, &latest);
+        let mut emitted = 0;
+        publish_if_current(&generation, mine, &latest, &snap("a"), |_| emitted += 1);
+        assert_eq!((emitted, latest.lock().unwrap().is_some()), (1, true));
+
+        let next = begin_generation(&generation, &latest);
+        assert!(latest.lock().unwrap().is_none(), "restart clears the cached snapshot");
+        publish_if_current(&generation, mine, &latest, &snap("stale"), |_| emitted += 1);
+        assert_eq!(emitted, 1, "old generation must not emit");
+        assert!(latest.lock().unwrap().is_none(), "old generation must not write latest");
+        publish_if_current(&generation, next, &latest, &snap("b"), |_| emitted += 1);
+        assert_eq!(latest.lock().unwrap().as_ref().map(|s| s.host.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn publish_check_write_and_emit_are_one_critical_section() {
+        // While the emit callback runs, a restart on another thread must block on the
+        // `latest` lock, so it cannot clear `latest` between the check and the write.
+        let latest = Arc::new(Mutex::new(None));
+        let generation = Arc::new(AtomicU64::new(0));
+        let mine = begin_generation(&generation, &latest);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let restarter = {
+            let (latest, generation) = (latest.clone(), generation.clone());
+            std::thread::spawn(move || {
+                started_rx.recv().unwrap();
+                begin_generation(&generation, &latest)
+            })
+        };
+        publish_if_current(&generation, mine, &latest, &snap("a"), |_| {
+            started_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(generation.load(Ordering::SeqCst), mine, "restart ran inside the critical section");
+        });
+        assert_eq!(restarter.join().unwrap(), mine + 1);
+        assert!(latest.lock().unwrap().is_none(), "restart's clear came after the publish");
+    }
+
+    #[test]
+    fn commands_that_take_the_latest_lock_are_async() {
+        // `emit` runs under the `latest` lock; with Tauri's `tracing` feature it blocks on the
+        // main thread. A sync command runs on the main thread, so taking the lock there can
+        // deadlock against a publisher. Such commands must be `async`.
+        let src = include_str!("commands.rs").replace("\r\n", "\n");
+        for name in ["save_settings", "get_snapshot"] {
+            assert!(
+                src.contains(&format!("#[tauri::command]\npub async fn {name}(")),
+                "{name} must be an async command"
+            );
+        }
+    }
+
+    #[test]
+    fn url_matches_saved_uses_backend_normalization() {
+        let saved = settings("http://box:8080");
+        for same in ["box:8080/v1", "http://box:8080/", " HTTP://Box:8080/v1/ ", "http://box:8080/?x=1"] {
+            assert!(url_matches_saved(same, Some(&saved)), "{same:?}");
+        }
+        for other in ["http://other:8080", "https://box:8080", "box:9090", "", "ftp://box", "http://u:p@box:8080"] {
+            assert!(!url_matches_saved(other, Some(&saved)), "{other:?}");
+        }
+        assert!(!url_matches_saved("http://box:8080", None), "nothing saved");
     }
 
     #[test]

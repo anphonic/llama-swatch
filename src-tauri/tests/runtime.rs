@@ -21,7 +21,7 @@ impl SnapshotSink for ChanSink {
 }
 
 fn config(url: String) -> MonitorConfig {
-    MonitorConfig { base_url: url, api_key: None, poll_interval: Duration::from_millis(200), thresholds: Thresholds::default() }
+    MonitorConfig { base_url: url, api_key: None, poll_interval: Duration::from_millis(200), version_retry: Duration::from_millis(200), thresholds: Thresholds::default() }
 }
 
 async fn wait_for(rx: &mut UnboundedReceiver<Snapshot>, what: &str, pred: impl Fn(&Snapshot) -> bool) -> Snapshot {
@@ -135,4 +135,67 @@ async fn stopping_the_handle_stops_snapshots() {
     while rx.try_recv().is_ok() {} // drain anything emitted before the abort landed
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(rx.try_recv().is_err(), "no snapshots after stop");
+}
+
+#[tokio::test]
+async fn transient_version_failure_is_retried_until_it_succeeds() {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    // The first /api/version answers 500; later ones fall through to the healthy mock.
+    Mock::given(path("/api/version"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    let first = wait_for(&mut rx, "connected", |s| matches!(s.connection, Connection::Connected { .. })).await;
+    assert_eq!(first.version, None, "the 500 must not yield a version");
+    wait_for(&mut rx, "version after retry", |s| s.version.as_deref() == Some("v188")).await;
+}
+
+#[tokio::test]
+async fn malformed_version_json_is_final_like_a_404() {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(200).set_body_string("<html>proxy</html>")).with_priority(1).mount(&server).await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    wait_for(&mut rx, "connected", |s| matches!(s.connection, Connection::Connected { .. })).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let asked = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/api/version").count();
+    assert_eq!(asked, 1, "a decode error will not fix itself; do not retry");
+}
+
+#[tokio::test]
+async fn persistent_version_5xx_is_retried_at_the_retry_cadence_not_every_tick() {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(500)).with_priority(1).mount(&server).await;
+    let (tx, mut rx) = unbounded_channel();
+    // 100 ms ticks, 500 ms version retry.
+    let mut cfg = config(server.uri());
+    cfg.poll_interval = Duration::from_millis(100);
+    cfg.version_retry = Duration::from_millis(500);
+    let _handle = start(cfg, Arc::new(ChanSink(tx))).unwrap();
+    wait_for(&mut rx, "connected", |s| matches!(s.connection, Connection::Connected { .. })).await;
+    tokio::time::sleep(Duration::from_millis(1700)).await;
+    let asked = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/api/version").count();
+    assert!(asked >= 2, "5xx must still be retried, asked {asked}");
+    assert!(asked <= 5, "retries must follow the retry cadence, not every tick; asked {asked}");
+}
+
+#[tokio::test]
+async fn missing_version_endpoint_is_not_re_asked_every_tick() {
+    let server = MockServer::start().await;
+    mount_healthy(&server).await;
+    Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(404)).with_priority(1).mount(&server).await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    wait_for(&mut rx, "connected", |s| matches!(s.connection, Connection::Connected { .. })).await;
+    // Let several 200 ms ticks pass.
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let asked = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/api/version").count();
+    assert_eq!(asked, 1, "404 means unsupported; do not retry");
 }
