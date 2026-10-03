@@ -175,6 +175,7 @@ pub fn restart_monitor(app: &AppHandle, state: &AppState, settings: &Settings, k
             base_url: settings.base_url.clone(),
             api_key: key,
             poll_interval: Duration::from_millis(settings.poll_interval_ms),
+            version_retry: runtime::MODELS_REFRESH,
             thresholds: settings.thresholds,
         },
         sink,
@@ -195,8 +196,12 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsView {
     SettingsView { configured: current.is_some(), settings: current.unwrap_or_default(), has_key }
 }
 
+/// INVARIANT: every command that takes the `latest` lock must be `async`. `publish_if_current`
+/// emits under that lock, and with Tauri's `tracing` feature `emit` blocks until the main
+/// thread services it; a sync command runs on the main thread and would deadlock waiting for
+/// the lock a publisher holds. Async commands run on the async runtime, never the main thread.
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
     settings: Settings,
@@ -238,9 +243,10 @@ pub fn is_saved_url(state: State<'_, AppState>, base_url: String) -> bool {
     url_matches_saved(&base_url, load_settings(&state.config_path).as_ref())
 }
 
+/// Async for the same reason as `save_settings` (see the invariant there).
 #[tauri::command]
-pub fn get_snapshot(state: State<'_, AppState>) -> Option<Snapshot> {
-    state.latest.lock().expect("latest poisoned").clone()
+pub async fn get_snapshot(state: State<'_, AppState>) -> Result<Option<Snapshot>, String> {
+    Ok(state.latest.lock().expect("latest poisoned").clone())
 }
 
 #[cfg(test)]
@@ -300,6 +306,20 @@ mod tests {
         });
         assert_eq!(restarter.join().unwrap(), mine + 1);
         assert!(latest.lock().unwrap().is_none(), "restart's clear came after the publish");
+    }
+
+    #[test]
+    fn commands_that_take_the_latest_lock_are_async() {
+        // `emit` runs under the `latest` lock; with Tauri's `tracing` feature it blocks on the
+        // main thread. A sync command runs on the main thread, so taking the lock there can
+        // deadlock against a publisher. Such commands must be `async`.
+        let src = include_str!("commands.rs").replace("\r\n", "\n");
+        for name in ["save_settings", "get_snapshot"] {
+            assert!(
+                src.contains(&format!("#[tauri::command]\npub async fn {name}(")),
+                "{name} must be an async command"
+            );
+        }
     }
 
     #[test]

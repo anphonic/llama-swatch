@@ -16,7 +16,7 @@ use crate::poller::{poll_once, Feature, PollOutcome};
 use crate::sse::SseParser;
 use crate::state::Thresholds;
 
-const MODELS_REFRESH: Duration = Duration::from_secs(30);
+pub const MODELS_REFRESH: Duration = Duration::from_secs(30);
 const UNAUTHORIZED_RETRY: Duration = Duration::from_secs(30);
 const EVENTS_UNAVAILABLE_RETRY: Duration = Duration::from_secs(60);
 /// Bound on waiting for the event stream's response headers.
@@ -32,6 +32,8 @@ pub struct MonitorConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub poll_interval: Duration,
+    /// How often to retry `/api/version` after a transient failure (not every tick).
+    pub version_retry: Duration,
     pub thresholds: Thresholds,
 }
 
@@ -89,24 +91,31 @@ pub fn start(cfg: MonitorConfig, sink: Arc<dyn SnapshotSink>) -> Result<MonitorH
         wake: Notify::new(),
     });
     shared.publish();
-    let poll = spawn(poll_loop(client.clone(), shared.clone(), cfg.poll_interval));
+    let poll = spawn(poll_loop(client.clone(), shared.clone(), cfg.poll_interval, cfg.version_retry));
     let events = spawn(event_loop(client, shared));
     Ok(MonitorHandle { tasks: vec![poll, events] })
 }
 
-async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Duration) {
+async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Duration, version_retry: Duration) {
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
     let mut need_version = true;
+    // After a transient /api/version failure, wait this long before asking again.
+    let mut version_retry_at: Option<Instant> = None;
     let mut models_fetched_at: Option<Instant> = None;
     loop {
         let want_models = models_fetched_at.map_or(true, |t| t.elapsed() >= MODELS_REFRESH);
-        let outcome = poll_once(&client, want_models, need_version).await;
+        let ask_version = need_version && version_retry_at.map_or(true, |t| Instant::now() >= t);
+        let outcome = poll_once(&client, want_models, ask_version).await;
         let delay = match &outcome {
             PollOutcome::Ok(d) => {
                 backoff.reset();
-                // Version is fetched once per (re)connection. Success and 404 (older builds
-                // without the endpoint) both settle it; a transient failure is retried.
-                need_version = matches!(d.version, Some(Feature::Failed));
+                // Version is fetched once per (re)connection. Success, 404 and malformed JSON
+                // settle it; a transient failure is retried, but only every `version_retry`.
+                match d.version {
+                    Some(Feature::Failed) => version_retry_at = Some(Instant::now() + version_retry),
+                    Some(_) => need_version = false,
+                    None => {}
+                }
                 if d.models.is_some() {
                     models_fetched_at = Some(Instant::now());
                 }
@@ -114,6 +123,7 @@ async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Durat
             }
             PollOutcome::Unauthorized => {
                 need_version = true;
+                version_retry_at = None;
                 UNAUTHORIZED_RETRY
             }
             PollOutcome::Unreachable(_) | PollOutcome::Error(_) => {
@@ -121,6 +131,7 @@ async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Durat
                     eprintln!("llama-swap poll error: {m}");
                 }
                 need_version = true;
+                version_retry_at = None;
                 backoff.next_delay()
             }
         };

@@ -11,7 +11,7 @@ pub const ACTIVITY_LIMIT: u32 = 100;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Feature<T> {
     Available(T),
-    /// 404: this llama-swap version does not have the endpoint.
+    /// 404 (or, for `/api/version`, an undecodable body): not usable, do not retry.
     Unavailable,
     /// Transient failure: keep whatever we had.
     Failed,
@@ -31,6 +31,19 @@ impl<T> Feature<T> {
                 Feature::Failed
             }
         }
+    }
+}
+
+/// `/api/version` classification. A malformed body (a proxy answering 200 with HTML, a
+/// changed shape) will not fix itself, so it is final like a 404; only transport errors
+/// and non-404 HTTP errors stay `Failed` (retried).
+fn version_feature(r: Result<VersionInfo, ClientError>) -> Feature<VersionInfo> {
+    match r {
+        Err(ClientError::Decode(m)) => {
+            log_decode("/api/version", &ClientError::Decode(m));
+            Feature::Unavailable
+        }
+        other => Feature::from_result("/api/version", other),
     }
 }
 
@@ -107,7 +120,7 @@ pub async fn poll_once(client: &LlamaSwapClient, want_models: bool, want_version
         latency,
         running,
         models: best_effort("/v1/models", models),
-        version: version.map(|r| Feature::from_result("/api/version", r)),
+        version: version.map(version_feature),
         stats: Feature::from_result("/api/metrics/stats", stats),
         activity: Feature::from_result("/api/metrics/activity", activity),
     })
