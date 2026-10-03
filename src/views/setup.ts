@@ -101,11 +101,12 @@ export function renderSetup(
     try {
       const result = await testConnection(entered.baseUrl, entered.apiKey);
       const keyBlank = entered.apiKey === null;
-      const sameUrl = view.hasKey && keyBlank ? await isSavedUrl(entered.baseUrl).catch(() => false) : false;
+      // null = the backend could not answer; then claim neither "sent" nor "not sent".
+      const sameUrl = view.hasKey && keyBlank ? await isSavedUrl(entered.baseUrl).catch((): null => null) : false;
       if (!alive()) return null;
       const { ok, text } = describeResult(result, {
-        savedKeySent: view.hasKey && keyBlank && sameUrl,
-        savedKeyNotSent: view.hasKey && keyBlank && !sameUrl,
+        savedKeySent: view.hasKey && keyBlank && sameUrl === true,
+        savedKeyNotSent: view.hasKey && keyBlank && sameUrl === false,
       });
       showStatus(text, ok ? "ok" : "error");
       return ok;

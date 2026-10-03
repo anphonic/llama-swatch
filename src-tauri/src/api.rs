@@ -66,7 +66,8 @@ impl ModelEntry {
     /// aliases (when `includeAliasesInList` is set), selectors, peer models and
     /// profile pins under `meta.llamaswap.type`; none of those can ever be
     /// loaded as such, so they must not become cards. An absent type means an
-    /// older llama-swap that lists only models.
+    /// older llama-swap that lists only models. Unknown future types are excluded
+    /// on purpose: a running model still appears through `/running`.
     pub fn is_local_model(&self) -> bool {
         matches!(self.meta.llamaswap.kind.as_str(), "" | "model")
     }
