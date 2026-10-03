@@ -50,9 +50,13 @@ impl Settings {
     }
 }
 
-/// Accepts what people paste: missing scheme, trailing slashes, an
-/// OpenAI-style `/v1` suffix, stray query strings. Keeps any reverse-proxy
-/// path prefix. Returns `scheme://host[:port][/prefix]` with no trailing slash.
+/// Sub-pages of llama-swap's web UI that may follow `/ui` in a pasted browser URL.
+const UI_PAGES: &[&str] = &["models", "activity", "logs", "playground", "config", "settings", "stats"];
+
+/// Accepts what people paste: missing scheme, trailing slashes, an OpenAI-style `/v1` suffix,
+/// llama-swap's `/ui` web path (as the last segment or before one known UI page), stray query
+/// strings. Keeps any reverse-proxy path prefix. Returns `scheme://host[:port][/prefix]` with no
+/// trailing slash.
 pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -73,10 +77,33 @@ pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
     }
     url.set_query(None);
     url.set_fragment(None);
-    let mut path = url.path().trim_end_matches('/').to_string();
-    if path.ends_with("/v1") {
-        path.truncate(path.len() - 3);
+    let path = url.path().trim_end_matches('/').to_string();
+    // llama-swap's web UI lives at /ui (people paste it from the browser). Strip it only when it is
+    // the final segment, or the segment before a single known UI page (`/ui/models`). Anything else
+    // (`/ui/llama`, `/apps/ui/proxy`) is treated as a reverse-proxy prefix and left alone.
+    // Only the leading empty segment (from the leading `/`) is dropped; interior empty segments
+    // (`/tenant//llama`) are significant to routing and are preserved exactly.
+    let mut segs: Vec<&str> = path.strip_prefix('/').unwrap_or("").split('/').collect();
+    if segs == [""] {
+        segs.clear();
     }
+    match segs.as_slice() {
+        [.., "ui"] => {
+            segs.pop();
+        }
+        [.., "ui", page] if UI_PAGES.contains(page) => {
+            segs.truncate(segs.len() - 2);
+        }
+        _ => {}
+    }
+    if segs.last() == Some(&"v1") {
+        segs.pop();
+    }
+    // Stripping a suffix can expose empty segments (`/a//v1`); they are trailing slashes now.
+    while segs.last() == Some(&"") {
+        segs.pop();
+    }
+    let path = if segs.is_empty() { String::new() } else { format!("/{}", segs.join("/")) };
     url.set_path(&path);
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
@@ -174,6 +201,26 @@ mod tests {
             ("http://box:8080/?x=1#frag", "http://box:8080"),
             ("HTTP://Box:8080", "http://box:8080"),
             ("http://[::1]:8080", "http://[::1]:8080"),
+            ("https://llama.example.test/ui", "https://llama.example.test"),
+            ("https://llama.example.test/ui/", "https://llama.example.test"),
+            ("https://llama.example.test/ui/models", "https://llama.example.test"),
+            ("https://h/llama/ui", "https://h/llama"),
+            ("https://h/llama/ui/models/", "https://h/llama"),
+            ("https://h/uikit", "https://h/uikit"),
+            ("https://h/menu/v1", "https://h/menu"),
+            ("https://h/ui/llama", "https://h/ui/llama"),
+            ("https://h/ui/llama/", "https://h/ui/llama"),
+            ("https://h/ui/llama/ui", "https://h/ui/llama"),
+            ("https://h/ui/llama/ui/models", "https://h/ui/llama"),
+            ("https://h/apps/ui/llama-swap", "https://h/apps/ui/llama-swap"),
+            ("https://h/v1/ui", "https://h"),
+            ("https://h/ui/v1", "https://h/ui"),
+            ("https://h/ui/unknownpage", "https://h/ui/unknownpage"),
+            ("http://[::1]:8080/ui", "http://[::1]:8080"),
+            ("http://box:8080/ui/", "http://box:8080"),
+            ("https://h/tenant//llama", "https://h/tenant//llama"),
+            ("https://h/tenant//llama/ui", "https://h/tenant//llama"),
+            ("https://h/a//v1", "https://h/a"),
         ];
         for (input, expected) in ok {
             assert_eq!(normalize_base_url(input).unwrap(), expected, "input: {input:?}");

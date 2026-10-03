@@ -1,5 +1,6 @@
 import { h } from "../dom";
 import { formatAgo, formatCount, formatDuration } from "../format";
+import { countLoaded, isLoaded } from "../models";
 import type { Connection, ModelCard, ModelState, Settings, Snapshot } from "../types";
 import { renderHistogram } from "./components/histogram";
 import { createRing, type Ring } from "./components/ring";
@@ -104,6 +105,24 @@ class CardView {
   }
 }
 
+const LOADED_ONLY_KEY = "llama-swap-monitor.loadedOnly";
+
+function readLoadedOnly(): boolean {
+  try {
+    return localStorage.getItem(LOADED_ONLY_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeLoadedOnly(on: boolean) {
+  try {
+    localStorage.setItem(LOADED_ONLY_KEY, on ? "1" : "0");
+  } catch {
+    // Storage unavailable: the choice just won't persist.
+  }
+}
+
 export function createDashboard(settings: Settings, onOpenSettings: () => void): Dashboard {
   const dot = h("span", { class: "dot" });
   const statusText = h("span", { class: "status-text" }, "Connecting…");
@@ -127,6 +146,17 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const openSettings = h("button", { type: "button" }, "Open settings");
   openSettings.addEventListener("click", onOpenSettings);
 
+  let loadedOnly = readLoadedOnly();
+  const loadedOnlyBox = h("input", { type: "checkbox", id: "loaded-only" });
+  loadedOnlyBox.checked = loadedOnly;
+  const loadedOnlyText = h("span", {}, "Loaded only");
+  const toolbar = h("div", { class: "toolbar" }, h("label", { class: "toggle", for: "loaded-only" }, loadedOnlyBox, loadedOnlyText));
+  loadedOnlyBox.addEventListener("change", () => {
+    loadedOnly = loadedOnlyBox.checked;
+    writeLoadedOnly(loadedOnly);
+    render();
+  });
+
   const grid = h("section", { class: "grid" });
   const empty = h("p", { class: "empty" }, "No models reported yet.");
   const tiles = {
@@ -142,7 +172,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     h("div", { class: "tiles" }, tiles.requests.el, tiles.input.el, tiles.output.el, tiles.speed.el),
     histBox,
   );
-  const element = h("main", { class: "dashboard" }, header, liveHint, banner, grid, stats);
+  const element = h("main", { class: "dashboard" }, header, liveHint, banner, toolbar, grid, stats);
 
   const cards = new Map<string, CardView>();
   let last: Snapshot | null = null;
@@ -185,8 +215,10 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       }
       view.update(m, lastSeenMs);
       ids.add(m.id);
-      ordered.push(view.el);
+      if (!loadedOnly || isLoaded(m)) ordered.push(view.el);
     }
+    loadedOnlyText.textContent = `Loaded only (${countLoaded(s.models)} of ${s.models.length})`;
+    empty.textContent = s.models.length ? "No models loaded." : "No models reported yet.";
     for (const id of [...cards.keys()]) if (!ids.has(id)) cards.delete(id);
     const wanted = ordered.length ? ordered : [empty];
     const same = wanted.length === grid.children.length && wanted.every((el, i) => grid.children[i] === el);

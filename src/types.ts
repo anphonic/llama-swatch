@@ -78,5 +78,6 @@ export interface SettingsView {
 export type TestResult =
   | { kind: "ok"; version: string }
   | { kind: "unreachable"; message: string }
+  | { kind: "redirect"; message: string }
   | { kind: "unauthorized" }
   | { kind: "notLlamaSwap"; message: string };

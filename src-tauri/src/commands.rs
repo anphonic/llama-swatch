@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn url_matches_saved_uses_backend_normalization() {
         let saved = settings("http://box:8080");
-        for same in ["box:8080/v1", "http://box:8080/", " HTTP://Box:8080/v1/ ", "http://box:8080/?x=1"] {
+        for same in ["box:8080/v1", "http://box:8080/", " HTTP://Box:8080/v1/ ", "http://box:8080/?x=1", "box:8080/ui", "http://box:8080/ui/"] {
             assert!(url_matches_saved(same, Some(&saved)), "{same:?}");
         }
         for other in ["http://other:8080", "https://box:8080", "box:9090", "", "ftp://box", "http://u:p@box:8080"] {

@@ -76,6 +76,11 @@ input {
 }
 .banner[hidden] { display: none; }
 
+/* ---- toolbar ---- */
+.toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; user-select: none; }
+.toggle input { width: auto; padding: 0; margin: 0; accent-color: var(--blue); cursor: pointer; }
+
 /* ---- model cards ---- */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
 .card {

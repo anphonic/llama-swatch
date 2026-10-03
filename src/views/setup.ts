@@ -29,7 +29,7 @@ export function renderSetup(
   const form = h(
     "form",
     {},
-    field("url", "llama-swap URL", url, "Where llama-swap listens, e.g. http://192.168.1.20:8080. A trailing /v1 is removed."),
+    field("url", "llama-swap URL", url, "Where llama-swap listens, e.g. http://192.168.1.20:8080. A trailing /v1 or /ui is removed."),
     field("key", "API key", key, "Only needed if llama-swap's config sets apiKeys. Stored in your OS keychain, never in a file."),
     view.hasKey ? h("label", { class: "check" }, removeKey, "Remove the saved key") : null,
     field("poll", "Refresh every (seconds)", poll),
@@ -164,6 +164,8 @@ function describeResult(r: TestResult, ctx: KeyContext): { ok: boolean; text: st
       return { ok: true, text: `Connected — llama-swap ${r.version}` };
     case "unreachable":
       return { ok: false, text: `Can't reach that address: ${r.message}` };
+    case "redirect":
+      return { ok: false, text: `${r.message}. Edit the URL above and test again.` };
     case "unauthorized":
       return {
         ok: false,
