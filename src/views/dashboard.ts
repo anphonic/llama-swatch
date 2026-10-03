@@ -87,7 +87,7 @@ class CardView {
   private readonly ring: Ring = createRing();
   private readonly title = h("div", { class: "card-title" });
   private readonly pill = h("span", { class: "pill" });
-  private readonly detail = h("span", { class: "card-detail" });
+  private readonly detail = h("div", { class: "card-detail" });
   private readonly sub = h("div", { class: "card-sub" });
   private readonly spark = h("div", { class: "card-spark" });
   private readonly ttl = createTtlBar();
@@ -98,9 +98,11 @@ class CardView {
     this.el = h(
       "article",
       { class: "card" },
-      this.ring.el,
-      h("div", { class: "card-main" }, this.title, h("div", { class: "card-line" }, this.pill, this.detail), this.sub),
-      h("div", { class: "card-side" }, this.spark, this.ttl.el),
+      h("div", { class: "card-head" }, this.ring.el, h("div", { class: "card-heading" }, this.title, this.pill)),
+      this.detail,
+      this.spark,
+      this.ttl.el,
+      this.sub,
     );
     this.el.addEventListener("dblclick", () => {
       if (this.card?.state.kind === "notLoaded") actions.load(this.card);
@@ -216,8 +218,6 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     gear,
   );
 
-  const liveHint = h("div", { class: "live-hint" }, "Live events unavailable — busy/stalled request detection is off");
-  liveHint.hidden = true;
   const banner = h("div", { class: "banner" });
   banner.hidden = true;
   const openSettings = h("button", { type: "button" }, "Open settings");
@@ -258,9 +258,19 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   );
   const modelsView = h("div", { class: "models-view" }, toolbar, grid, stats);
   const history = createHistory();
-  // Banner, toast and the live-events hint overlay the bottom of the window instead of sitting in
+  // Banner and toast overlay the bottom of the window instead of sitting in
   // the flow, so showing or hiding them never pushes content down.
-  const notices = h("div", { class: "notices" }, liveHint, banner, toast);
+  const notices = h("div", { class: "notices" }, banner, toast);
+  // Keep the page's bottom padding equal to the overlay's height so the last card / History row
+  // can always be scrolled fully clear of it. Also publish the scrollbar width (see styles.css).
+  const syncOverlay = () => {
+    element.style.setProperty("--notices-h", `${notices.offsetHeight}px`);
+    const sbw = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+    document.documentElement.style.setProperty("--sbw", `${sbw}px`);
+  };
+  const overlayObserver = new ResizeObserver(syncOverlay);
+  overlayObserver.observe(notices);
+  window.addEventListener("resize", syncOverlay);
   const element = h("main", { class: "dashboard" }, header, modelsView, history.element, notices);
 
   const cards = new Map<string, CardView>();
@@ -363,7 +373,6 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       ? "Receiving live request events"
       : "Live events unavailable: Busy and stalled-request detection are off";
     live.classList.toggle("badge-live", s.liveEvents);
-    liveHint.hidden = s.liveEvents || c.kind !== "connected";
 
     const seen = s.lastOkMs ? ` · last seen ${formatAgo(s.lastOkMs)}` : "";
     if (c.kind === "unauthorized") showBanner("llama-swap rejected the API key.", true);
@@ -435,6 +444,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     destroy() {
       window.clearInterval(timer);
       history.destroy();
+      overlayObserver.disconnect();
+      window.removeEventListener("resize", syncOverlay);
       closeMenu();
       if (toastTimer !== null) window.clearTimeout(toastTimer);
       document.removeEventListener("mousedown", onDocClick);

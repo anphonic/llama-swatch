@@ -17,6 +17,7 @@
         "width": 481,
         "height": 770,
         "center": true,
+        "visible": false,
         "minWidth": 420,
         "minHeight": 400
       }

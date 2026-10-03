@@ -18,8 +18,8 @@ const ALL = "";
 
 // Widths in px; Model (width 0) takes the rest. Fixed so a refresh never re-flows the columns.
 const COLUMNS: [string, boolean, number][] = [
-  ["Time", false, 84], ["Model", false, 0], ["Mode", false, 68], ["Status", false, 64],
-  ["Input", true, 76], ["Cached", true, 76], ["Output", true, 76], ["tok/s", true, 68], ["Duration", true, 84],
+  ["Time", false, 84], ["Model", false, 0], ["Mode", false, 76], ["Status", false, 80],
+  ["Input", true, 76], ["Cached", true, 76], ["Output", true, 76], ["tok/s", true, 68], ["Duration", true, 96],
 ];
 
 const pad = (n: number) => String(n).padStart(2, "0");

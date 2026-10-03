@@ -9,6 +9,7 @@ pub mod poller;
 pub mod runtime;
 pub mod sse;
 pub mod state;
+pub mod window;
 
 use std::sync::Arc;
 
@@ -30,13 +31,14 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let state = commands::AppState::new(dir.join("settings.json"), Arc::new(config::KeyringStore));
-            if let Some(settings) = config::load_settings(&state.config_path) {
-                if settings.always_on_top {
-                    if let Some(w) = app.get_webview_window("main") {
-                        // Unsupported on some Linux/Wayland compositors; stay quiet.
-                        let _ = w.set_always_on_top(true);
-                    }
-                }
+            let settings = config::load_settings(&state.config_path);
+            // Pin, first-launch fit and show; always shows the window, whatever fails.
+            window::prepare(
+                app.handle(),
+                settings.as_ref().is_some_and(|s| s.always_on_top),
+                !window::has_saved_state(&dir),
+            );
+            if let Some(settings) = settings {
                 let key = state.secrets.get(&settings.base_url).ok().flatten();
                 if let Err(e) = commands::restart_monitor(app.handle(), &state, &settings, key) {
                     eprintln!("monitor failed to start: {e}");
