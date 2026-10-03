@@ -5,8 +5,16 @@
 use std::path::Path;
 
 use tauri::{AppHandle, Manager, PhysicalSize};
+use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 const MIN_INNER_HEIGHT_LOGICAL: f64 = 400.0;
+
+/// The window-state flags, shared by the plugin registration and the explicit restore below.
+pub const STATE_FLAGS: StateFlags =
+    StateFlags::SIZE.union(StateFlags::POSITION).union(StateFlags::MAXIMIZED);
+
+/// Label of the only window (tauri.conf.json).
+pub const MAIN_LABEL: &str = "main";
 
 /// First launch only: the inner height that makes the whole window (chrome included) fit in
 /// `work_h`, never below `min_inner`. Unchanged when it already fits. All values physical px.
@@ -18,10 +26,17 @@ pub fn fit_inner_height(inner_h: u32, outer_h: u32, work_h: u32, min_inner: u32)
     work_h.saturating_sub(chrome).max(min_inner).min(inner_h)
 }
 
-/// Applies the pin and the first-launch fit, then shows the window. Every step is best effort
-/// and the window is always shown, even if a step fails.
+/// Restores the saved size/position/maximized state, applies the pin and the first-launch fit,
+/// then shows the window. Every step is best effort and the window is always shown, even if a
+/// step fails.
+///
+/// The restore is done here rather than by the plugin: the plugin's automatic restore runs in
+/// its window-ready hook, which Tauri queues to the event loop and so runs after this setup code
+/// has already shown the window (the plugin is registered with `skip_initial_state`). On first
+/// launch there is no saved state, so the restore only records the current (default) state.
 pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool) {
-    let Some(w) = app.get_webview_window("main") else { return };
+    let Some(w) = app.get_webview_window(MAIN_LABEL) else { return };
+    let _ = w.restore_state(STATE_FLAGS);
     if always_on_top {
         // Unsupported on some Linux/Wayland compositors; stay quiet.
         let _ = w.set_always_on_top(true);
