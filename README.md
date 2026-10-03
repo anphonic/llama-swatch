@@ -87,3 +87,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Releases: push a `v*` tag. GitHub Actions builds Windows, macOS (universal) and Linux
 installers into a draft release.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE.
+
+Third-party dependencies are under their own licenses (MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0 and similar).
