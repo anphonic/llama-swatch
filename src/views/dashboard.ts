@@ -77,7 +77,8 @@ function isStale(c: Connection): boolean {
 /** What a card can ask the dashboard to do; the dashboard owns confirmation and error display. */
 interface CardActions {
   load(card: ModelCard): void;
-  unload(card: ModelCard, x: number, y: number): void;
+  /** `from` is the card element: focus returns to it when the menu closes from the keyboard. */
+  unload(card: ModelCard, x: number, y: number, from: HTMLElement): void;
 }
 
 /** Fixed-height card (see `.card` in styles.css): every state fills the same slots, so a state
@@ -97,7 +98,7 @@ class CardView {
   constructor(private readonly settings: Settings, actions: CardActions) {
     this.el = h(
       "article",
-      { class: "card" },
+      { class: "card", tabindex: "0" },
       h("div", { class: "card-head" }, this.ring.el, h("div", { class: "card-heading" }, this.title, this.pill)),
       this.detail,
       this.spark,
@@ -107,11 +108,30 @@ class CardView {
     this.el.addEventListener("dblclick", () => {
       if (this.card?.state.kind === "notLoaded") actions.load(this.card);
     });
+    // Keyboard: Enter/Space loads (same path as double-click); the Menu key or Shift+F10
+    // fires `contextmenu`, which opens the unload menu anchored to the card.
+    let keyboardMenu = false;
+    this.el.addEventListener("keydown", (e) => {
+      if (e.target !== this.el) return;
+      if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) keyboardMenu = true;
+      if ((e.key === "Enter" || e.key === " ") && !e.repeat) {
+        e.preventDefault(); // Space would scroll the grid
+        if (this.card?.state.kind === "notLoaded") actions.load(this.card);
+      }
+    });
     this.el.addEventListener("contextmenu", (e) => {
       e.preventDefault(); // no browser menu on cards
+      const fromKeyboard = keyboardMenu || (e.clientX === 0 && e.clientY === 0);
+      keyboardMenu = false;
       const kind = this.card?.state.kind;
       if (this.card && (kind === "idle" || kind === "busy" || kind === "stalled" || kind === "loading")) {
-        actions.unload(this.card, e.clientX, e.clientY);
+        let { clientX: x, clientY: y } = e;
+        if (fromKeyboard) {
+          const r = this.el.getBoundingClientRect();
+          x = r.left + 12;
+          y = r.top + 12;
+        }
+        actions.unload(this.card, x, y, this.el);
       }
     });
   }
@@ -122,6 +142,13 @@ class CardView {
     this.card = card;
     const hint = s.kind === "notLoaded" ? "Double-click to load" : s.kind === "unloading" ? "" : "Right-click to unload";
     if (this.el.title !== hint) this.el.title = hint;
+    const keyHint = s.kind === "notLoaded" ? "Enter to load" : s.kind === "unloading" ? "" : "Menu key to unload";
+    const label = keyHint ? `${card.name}: ${keyHint}` : card.name;
+    if (this.el.getAttribute("aria-label") !== label) this.el.setAttribute("aria-label", label);
+    const keys = s.kind === "notLoaded" ? "Enter Space" : s.kind === "unloading" ? "" : "ContextMenu Shift+F10";
+    if (keys) {
+      if (this.el.getAttribute("aria-keyshortcuts") !== keys) this.el.setAttribute("aria-keyshortcuts", keys);
+    } else this.el.removeAttribute("aria-keyshortcuts");
     if (this.el.dataset.state !== s.kind) this.el.dataset.state = s.kind;
     this.title.textContent = card.name;
     this.title.title = card.description ? `${card.id} — ${card.description}` : card.id;
@@ -302,7 +329,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   }
 
   function busyOther(id: string): ModelCard | undefined {
-    return last?.models.find((m) => m.id !== id && m.state.kind === "busy");
+    // Stalled still has a request in flight, so it counts as active.
+    return last?.models.find((m) => m.id !== id && (m.state.kind === "busy" || m.state.kind === "stalled"));
   }
 
   const loading = new Set<string>();
@@ -312,48 +340,56 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     load(card) {
       if (loading.has(card.id)) return; // a load for this model is already pending
       const busy = busyOther(card.id);
-      if (busy && !confirm(`${busy.name} is busy. Loading ${card.name} may swap it out. Load anyway?`)) return;
+      if (busy && !confirm(`${busy.name} has a request in flight. Loading ${card.name} may swap it out. Load anyway?`)) return;
       loading.add(card.id);
       loadModel(card.id)
         .catch((e) => showToast(`Could not load ${card.name}: ${String(e)}`))
         .finally(() => loading.delete(card.id));
     },
-    unload(card, x, y) {
-      openMenu(x, y, () => {
-        if (card.state.kind === "busy" && !confirm(`${card.name} is busy. Unload anyway?`)) return;
+    unload(card, x, y, from) {
+      openMenu(x, y, from, () => {
+        const active = card.state.kind === "busy" || card.state.kind === "stalled";
+        if (active && !confirm(`${card.name} has a request in flight. Unload anyway?`)) return;
         unloadModel(card.id).catch((e) => showToast(`Could not unload ${card.name}: ${String(e)}`));
       });
     },
   };
 
   let menu: HTMLElement | null = null;
-  function closeMenu() {
+  let menuReturn: HTMLElement | null = null;
+  /** `restoreFocus`: put focus back on the card the menu was opened from (keyboard closes). */
+  function closeMenu(restoreFocus = false) {
+    const back = menuReturn;
     menu?.remove();
     menu = null;
+    menuReturn = null;
+    if (restoreFocus && back?.isConnected) back.focus();
   }
-  function openMenu(x: number, y: number, onUnload: () => void) {
+  const dismissMenu = () => closeMenu();
+  function openMenu(x: number, y: number, from: HTMLElement, onUnload: () => void) {
     closeMenu();
     const item = h("button", { type: "button", class: "ctx-item", role: "menuitem" }, "Unload");
     item.addEventListener("click", () => {
-      closeMenu();
+      closeMenu(true);
       onUnload();
     });
     menu = h("div", { class: "ctx-menu", role: "menu" }, item);
     menu.style.left = `${Math.min(x, window.innerWidth - 120)}px`;
     menu.style.top = `${Math.min(y, window.innerHeight - 50)}px`;
     element.append(menu);
+    menuReturn = from;
     item.focus();
   }
   const onDocClick = (e: Event) => {
     if (menu && !menu.contains(e.target as Node)) closeMenu();
   };
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") closeMenu();
+    if (e.key === "Escape" && menu) closeMenu(true);
   };
   document.addEventListener("mousedown", onDocClick);
   document.addEventListener("keydown", onKey);
-  window.addEventListener("blur", closeMenu);
-  window.addEventListener("scroll", closeMenu, true);
+  window.addEventListener("blur", dismissMenu);
+  window.addEventListener("scroll", dismissMenu, true);
 
   function showBanner(text: string, withSettingsButton: boolean) {
     banner.replaceChildren(h("span", {}, text), ...(withSettingsButton ? [openSettings] : []));
@@ -450,8 +486,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       if (toastTimer !== null) window.clearTimeout(toastTimer);
       document.removeEventListener("mousedown", onDocClick);
       document.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", closeMenu);
-      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("blur", dismissMenu);
+      window.removeEventListener("scroll", dismissMenu, true);
     },
   };
 }

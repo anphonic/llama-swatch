@@ -113,6 +113,9 @@ input {
 .card[data-state="busy"] { --pill: var(--blue); --ring: var(--blue); }
 .card[data-state="stalled"] { --pill: var(--red); --ring: var(--red); border-color: var(--red); box-shadow: 0 0 0 1px var(--red) inset; }
 .card[data-state="notLoaded"] { opacity: 0.55; }
+.card:focus { outline: none; }
+.card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.card[data-state="notLoaded"]:focus-visible { opacity: 1; }
 .card-head { display: flex; gap: 12px; align-items: center; height: 64px; flex: none; }
 .card-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .card-title { max-width: 100%; font-weight: 600; line-height: 20px; height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
