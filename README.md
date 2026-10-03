@@ -68,7 +68,7 @@ These builds are **not code-signed**, so each OS warns on first launch:
    The saved key is only ever sent to the URL it was saved for. If you change the URL, paste
    the key again.
 
-Stall thresholds (loading timeout, no-first-token timeout, and so on) are under
+Stall thresholds (loading timeout, no-first-byte timeout, and so on) are under
 **Stall detection** in settings.
 
 ## Develop

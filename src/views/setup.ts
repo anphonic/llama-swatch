@@ -42,7 +42,7 @@ export function renderSetup(
         { class: "thresholds" },
         field("load", "Loading timeout (s)", load),
         field("stop", "Unloading timeout (s)", stop),
-        field("first-byte", "No first token after (s)", firstByte),
+        field("first-byte", "No first byte after (s)", firstByte),
         field("stall", "Output stopped for (s)", stall),
       ),
     ),
