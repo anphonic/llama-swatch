@@ -81,7 +81,12 @@ pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
     // llama-swap's web UI lives at /ui (people paste it from the browser). Strip it only when it is
     // the final segment, or the segment before a single known UI page (`/ui/models`). Anything else
     // (`/ui/llama`, `/apps/ui/proxy`) is treated as a reverse-proxy prefix and left alone.
-    let mut segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    // Only the leading empty segment (from the leading `/`) is dropped; interior empty segments
+    // (`/tenant//llama`) are significant to routing and are preserved exactly.
+    let mut segs: Vec<&str> = path.strip_prefix('/').unwrap_or("").split('/').collect();
+    if segs == [""] {
+        segs.clear();
+    }
     match segs.as_slice() {
         [.., "ui"] => {
             segs.pop();
@@ -92,6 +97,10 @@ pub fn normalize_base_url(input: &str) -> Result<String, ConfigError> {
         _ => {}
     }
     if segs.last() == Some(&"v1") {
+        segs.pop();
+    }
+    // Stripping a suffix can expose empty segments (`/a//v1`); they are trailing slashes now.
+    while segs.last() == Some(&"") {
         segs.pop();
     }
     let path = if segs.is_empty() { String::new() } else { format!("/{}", segs.join("/")) };
@@ -209,6 +218,9 @@ mod tests {
             ("https://h/ui/unknownpage", "https://h/ui/unknownpage"),
             ("http://[::1]:8080/ui", "http://[::1]:8080"),
             ("http://box:8080/ui/", "http://box:8080"),
+            ("https://h/tenant//llama", "https://h/tenant//llama"),
+            ("https://h/tenant//llama/ui", "https://h/tenant//llama"),
+            ("https://h/a//v1", "https://h/a"),
         ];
         for (input, expected) in ok {
             assert_eq!(normalize_base_url(input).unwrap(), expected, "input: {input:?}");

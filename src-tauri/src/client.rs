@@ -229,6 +229,8 @@ pub async fn test_connection(client: &LlamaSwapClient) -> TestResult {
         Err(ClientError::NotFound) => match client.running().await {
             Ok(_) => TestResult::Ok { version: "unknown".into() },
             Err(ClientError::Unauthorized) => TestResult::Unauthorized,
+            Err(ClientError::Unreachable(message)) => TestResult::Unreachable { message },
+            Err(ClientError::Redirect(message)) => TestResult::Redirect { message },
             Err(e) => TestResult::NotLlamaSwap { message: format!("/running: {e}") },
         },
         Err(e) => TestResult::NotLlamaSwap { message: format!("/api/version: {e}") },
@@ -266,6 +268,23 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // wiremock verifies expect(2)/expect(0) on drop: no extra request, nothing reached the target.
+    }
+
+    #[tokio::test]
+    async fn running_fallback_redirect_reports_redirect() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/health")).respond_with(ResponseTemplate::new(200).set_body_string("OK")).mount(&server).await;
+        Mock::given(method("GET")).and(path("/api/version")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/running"))
+            .respond_with(ResponseTemplate::new(308).insert_header("Location", "https://elsewhere.invalid/running"))
+            .mount(&server)
+            .await;
+        let c = LlamaSwapClient::new(&server.uri(), Some("k".into())).unwrap();
+        match test_connection(&c).await {
+            TestResult::Redirect { message } => assert!(message.contains("redirected to"), "{message}"),
+            other => panic!("expected Redirect, got {other:?}"),
+        }
     }
 
     fn advice(request: &str, location: Option<&str>) -> String {
