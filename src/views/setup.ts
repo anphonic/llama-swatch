@@ -123,7 +123,23 @@ export function renderSetup(
 }
 
 function normalizeUrl(u: string): string {
-  return u.trim().replace(/\/+$/, "");
+  const trimmed = u.trim();
+  const withScheme = trimmed.includes("://") ? trimmed : `http://${trimmed}`;
+  try {
+    const url = new URL(withScheme);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      !url.hostname ||
+      url.username ||
+      url.password
+    ) {
+      return "";
+    }
+    const path = url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "");
+    return `${url.origin}${path}`;
+  } catch {
+    return "";
+  }
 }
 
 interface KeyContext {
