@@ -67,6 +67,7 @@ export interface Settings {
   baseUrl: string;
   pollIntervalMs: number;
   thresholds: Thresholds;
+  alwaysOnTop: boolean;
 }
 
 export interface SettingsView {
@@ -81,3 +82,18 @@ export type TestResult =
   | { kind: "redirect"; message: string }
   | { kind: "unauthorized" }
   | { kind: "notLlamaSwap"; message: string };
+
+/** One History row, serialized from api.rs `ActivityRow`. Newest first as returned by llama-swap. */
+export interface ActivityRow {
+  id: number;
+  timestampMs: number | null;
+  model: string;
+  reqPath: string;
+  contentType: string;
+  status: number;
+  durationMs: number;
+  inputTokens: number;
+  cacheTokens: number;
+  outputTokens: number;
+  tokensPerSecond: number;
+}

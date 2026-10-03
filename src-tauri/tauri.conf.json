@@ -14,8 +14,10 @@
       {
         "label": "main",
         "title": "llama-swap Monitor",
-        "width": 1100,
-        "height": 760,
+        "width": 481,
+        "height": 770,
+        "center": true,
+        "visible": false,
         "minWidth": 420,
         "minHeight": 400
       }

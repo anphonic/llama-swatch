@@ -65,6 +65,7 @@ export function renderSetup(
       firstByteTimeoutS: readSeconds(firstByte, 90),
       streamStallTimeoutS: readSeconds(stall, 30),
     },
+    alwaysOnTop: s.alwaysOnTop, // changed from the dashboard's pin button, not this form
   });
 
   const controls: Array<HTMLInputElement | HTMLButtonElement> = [

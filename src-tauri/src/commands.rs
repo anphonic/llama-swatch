@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::api::ActivityRow;
 use crate::client::{self, LlamaSwapClient, TestResult};
 use crate::config::{self, load_settings, normalize_base_url, ConfigError, SecretStore, Settings};
 use crate::monitor::Snapshot;
@@ -196,6 +197,13 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsView {
     SettingsView { configured: current.is_some(), settings: current.unwrap_or_default(), has_key }
 }
 
+/// Remembers the header pin button's state. The window itself is changed by the frontend
+/// (`setAlwaysOnTop`), so a platform that ignores it never produces an error here.
+#[tauri::command]
+pub fn set_always_on_top(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    config::save_always_on_top(&state.config_path, on).map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// INVARIANT: every command that takes the `latest` lock must be `async`. `publish_if_current`
 /// emits under that lock, and with Tauri's `tracing` feature `emit` blocks until the main
 /// thread services it; a sync command runs on the main thread and would deadlock waiting for
@@ -247,6 +255,70 @@ pub fn is_saved_url(state: State<'_, AppState>, base_url: String) -> bool {
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, AppState>) -> Result<Option<Snapshot>, String> {
     Ok(state.latest.lock().expect("latest poisoned").clone())
+}
+
+/// Most rows `get_activity` will return, whatever the webview asks for.
+const MAX_ACTIVITY_LIMIT: u32 = 1000;
+
+/// Model ids come from the webview, so only an id in the latest snapshot's model list is used.
+pub fn validate_model_id(snapshot: Option<&Snapshot>, id: &str) -> Result<(), String> {
+    match snapshot {
+        Some(s) if s.models.iter().any(|m| m.id == id) => Ok(()),
+        _ => Err("unknown model".into()),
+    }
+}
+
+/// Validates `id` against the snapshot AND checks that the snapshot came from the server the
+/// request will go to. `save_settings` writes the new URL before the monitor restart clears
+/// `latest`, so without the host check an id validated against the old server could be sent
+/// to the new one.
+pub fn validate_for(snapshot: Option<&Snapshot>, id: &str, saved_base_url: &str) -> Result<(), String> {
+    validate_model_id(snapshot, id)?;
+    match snapshot {
+        Some(s) if s.host.trim_end_matches('/') == saved_base_url.trim_end_matches('/') => Ok(()),
+        _ => Err("settings changed, try again".into()),
+    }
+}
+
+/// Client for the given saved settings and their saved key; the key never leaves this function
+/// except into the client.
+fn client_for(state: &AppState, settings: &Settings) -> Result<LlamaSwapClient, String> {
+    let key = state.secrets.get(&settings.base_url).ok().flatten();
+    LlamaSwapClient::new(&settings.base_url, key).map_err(|e| e.to_string())
+}
+
+/// Client for the saved URL and its saved key.
+fn saved_client(state: &AppState) -> Result<LlamaSwapClient, String> {
+    let settings = load_settings(&state.config_path).ok_or("not configured")?;
+    client_for(state, &settings)
+}
+
+/// Client for a model command: the id is checked against the latest snapshot, and that snapshot
+/// must come from the saved URL, before the keychain is read or any request is built. The
+/// `latest` lock is held only for the check (never across an `.await`).
+fn model_client(state: &AppState, id: &str) -> Result<LlamaSwapClient, String> {
+    let settings = load_settings(&state.config_path).ok_or("not configured")?;
+    validate_for(state.latest.lock().expect("latest poisoned").as_ref(), id, &settings.base_url)?;
+    client_for(state, &settings)
+}
+
+/// Recent requests, newest first. Async for the same reason as `save_settings`.
+#[tauri::command]
+pub async fn get_activity(state: State<'_, AppState>, limit: u32) -> Result<Vec<ActivityRow>, String> {
+    let client = saved_client(&state)?;
+    let rows = client.activity(limit.clamp(1, MAX_ACTIVITY_LIMIT)).await.map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(ActivityRow::from).collect())
+}
+
+/// Blocks until the model is up (possibly minutes); the webview fires it and watches snapshots.
+#[tauri::command]
+pub async fn load_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    model_client(&state, &id)?.load_model(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unload_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    model_client(&state, &id)?.unload_model(&id).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -314,7 +386,7 @@ mod tests {
         // main thread. A sync command runs on the main thread, so taking the lock there can
         // deadlock against a publisher. Such commands must be `async`.
         let src = include_str!("commands.rs").replace("\r\n", "\n");
-        for name in ["save_settings", "get_snapshot"] {
+        for name in ["save_settings", "get_snapshot", "load_model", "unload_model"] {
             assert!(
                 src.contains(&format!("#[tauri::command]\npub async fn {name}(")),
                 "{name} must be an async command"
@@ -460,5 +532,61 @@ mod tests {
         assert_eq!(key_for_test(&store, None, "http://box:8080", None).unwrap(), None);
         assert_eq!(key_for_test(&store, Some(&saved), "http://typo:8080", Some(" new ".into())).unwrap().as_deref(), Some("new"));
         assert_eq!(key_for_test(&store, Some(&saved), "http://box:8080", Some("".into())).unwrap(), None);
+    }
+
+    #[test]
+    fn model_ids_must_be_in_the_latest_snapshot() {
+        let mut s = snap("h");
+        s.models.push(model("qwen"));
+        assert!(validate_model_id(Some(&s), "qwen").is_ok());
+        for bad in ["qwen/../x", "qwe", "", "QWEN", "other"] {
+            assert!(validate_model_id(Some(&s), bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_model_id(None, "qwen").is_err(), "no snapshot yet");
+    }
+
+    fn model(id: &str) -> crate::monitor::ModelCard {
+        crate::monitor::ModelCard {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            state: crate::state::ModelState::NotLoaded,
+            ttl_s: None,
+            ttl_remaining_s: None,
+            tok_s_history: vec![],
+            last_request_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn validate_for_binds_the_id_to_the_snapshot_host() {
+        let mut s = snap("http://box:8080");
+        s.models.push(model("qwen"));
+        assert!(validate_for(Some(&s), "qwen", "http://box:8080").is_ok(), "matching host");
+        assert_eq!(
+            validate_for(Some(&s), "qwen", "http://other:8080").unwrap_err(),
+            "settings changed, try again",
+            "id valid but snapshot is from a different host"
+        );
+        assert!(validate_for(Some(&s), "nope", "http://box:8080").is_err(), "unknown id");
+        assert!(validate_for(None, "qwen", "http://box:8080").is_err(), "no snapshot");
+    }
+
+    #[test]
+    fn rejected_ids_send_no_request() {
+        // The commands build their client through model_client, which validates (id and host)
+        // before reading the key or building a client, so a rejected id cannot reach HTTP.
+        let src = include_str!("commands.rs");
+        for name in ["load_model", "unload_model"] {
+            let body = src.split(&format!("pub async fn {name}(")).nth(1).unwrap();
+            let body = &body[..body.find("
+}").unwrap()];
+            assert!(body.contains("model_client("), "{name} must use model_client");
+            assert!(!body.contains("saved_client("), "{name} must not bypass validation");
+        }
+        let body = src.split("fn model_client(").nth(1).unwrap();
+        let v = body.find("validate_for(").unwrap();
+        let c = body.find("client_for(").unwrap();
+        assert!(v < c, "model_client must validate before reading the key");
     }
 }
