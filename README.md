@@ -14,11 +14,19 @@ on your LAN, or behind a reverse proxy.
 | Not loaded | dimmed grey ring | Configured in llama-swap, not running |
 | Loading | amber pulsing ring, seconds in the middle | llama-swap is starting the model |
 | Idle | solid green ring, TTL bar | Loaded, no requests in flight |
-| Busy | spinning blue arc, request count | At least one request in flight |
-| Stalled | red ring with `!` | Loading/unloading took too long, or a request stopped producing output |
+| Busy | spinning blue arc, request count | At least one request is in flight and remains within its applicable timeout |
+| Stalled | red ring with `!` | Loading/unloading took too long, or the model stopped producing output |
 | Unloading | fading grey ring | llama-swap is stopping the model |
 
-Busy and request-level Stalled detection need llama-swap's live event stream (`/api/events`).
+A busy card shows how many requests are streaming output and how many are still queued for a
+free slot, plus how long ago output last arrived, e.g. `3 streaming · 2 queued · last output 4 s ago`.
+Stalls are judged for the whole model, not per request: while any request is streaming, the
+model is Stalled only when every streaming request has been quiet longer than the stream stall
+timeout, so a request waiting its turn never marks an active model as Stalled. With nothing
+streaming yet, it is Stalled once the longest wait passes the no-first-byte timeout. A request
+queued for more than 10 times that timeout while others stream adds a `queued long` hint.
+
+Busy and output-stall detection need llama-swap's live event stream (`/api/events`).
 The header badge shows `live` when it's connected and `polling` when it isn't.
 
 ## Window

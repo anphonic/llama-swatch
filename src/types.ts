@@ -4,7 +4,19 @@ export type ModelState =
   | { kind: "notLoaded" }
   | { kind: "loading"; elapsedS: number }
   | { kind: "idle"; uptimeS: number }
-  | { kind: "busy"; requests: number; oldestElapsedS: number }
+  | {
+      kind: "busy";
+      requests: number;
+      oldestElapsedS: number;
+      /** Requests that have produced output. */
+      streaming: number;
+      /** Requests still waiting for their first byte. */
+      queued: number;
+      /** Seconds since any streaming request last produced output; null while nothing streams. */
+      lastOutputS: number | null;
+      /** Hint: a queued request has waited over 10x the first-byte timeout while others stream. */
+      queuedLong: boolean;
+    }
   | { kind: "stalled"; reason: string }
   | { kind: "unloading" };
 

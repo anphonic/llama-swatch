@@ -38,7 +38,46 @@ function lastOf(values: number[]): number | undefined {
   return values.length ? values[values.length - 1] : undefined;
 }
 
-function describe(card: ModelCard, settings: Settings): string {
+/** The card's one-line detail: `text`, then `warn` in the warning colour, then `rest`, joined
+ *  with " · ". `title` is the tooltip. */
+interface Detail {
+  text: string;
+  warn?: string;
+  rest?: string;
+  title?: string;
+}
+
+const SEP = " · ";
+
+/** Busy: "3 streaming · 2 queued · queued long · last output 4 s ago · 41.8 tok/s", zero parts
+ *  omitted. The hint sits before "last output" so it survives ellipsizing; tok/s follows it.
+ *  `ageS` is how long ago the snapshot arrived, so "last output" keeps counting between
+ *  snapshots, clamped to the stall timeout so it never contradicts the Busy pill. */
+function describeBusy(
+  s: Extract<ModelState, { kind: "busy" }>,
+  tok: number | undefined,
+  ageS: number,
+  stallTimeoutS: number,
+): Detail {
+  const text = [s.streaming ? `${s.streaming} streaming` : null, s.queued ? `${s.queued} queued` : null]
+    .filter(Boolean)
+    .join(SEP);
+  const warn = s.queuedLong ? "queued long" : undefined;
+  const rest = [
+    s.lastOutputS !== null ? `last output ${formatDuration(Math.min(s.lastOutputS + ageS, stallTimeoutS))} ago` : "waiting",
+    tok !== undefined && tok > 0 ? `${tok.toFixed(1)} tok/s` : null,
+  ].filter(Boolean).join(SEP);
+  const line = [text, warn, rest].filter(Boolean).join(SEP);
+  return { text, warn, rest, title: `${line}\noldest request ${formatDuration(s.oldestElapsedS + ageS)}` };
+}
+
+function describe(card: ModelCard, settings: Settings, ageS: number): Detail {
+  return card.state.kind === "busy"
+    ? describeBusy(card.state, lastOf(card.tokSHistory), ageS, settings.thresholds.streamStallTimeoutS)
+    : { text: describeText(card, settings) };
+}
+
+function describeText(card: ModelCard, settings: Settings): string {
   const s = card.state;
   const tok = lastOf(card.tokSHistory);
   switch (s.kind) {
@@ -49,11 +88,7 @@ function describe(card: ModelCard, settings: Settings): string {
     case "idle":
       return `Up ${formatDuration(s.uptimeS)}${tok !== undefined ? ` · last ${tok.toFixed(1)} tok/s` : ""}`;
     case "busy":
-      return [
-        `${s.requests} request${s.requests === 1 ? "" : "s"}`,
-        tok !== undefined ? `${tok.toFixed(1)} tok/s` : null,
-        formatDuration(s.oldestElapsedS),
-      ].filter(Boolean).join(" · ");
+      return ""; // see describeBusy
     case "stalled":
       return s.reason;
     case "unloading":
@@ -94,6 +129,7 @@ class CardView {
   private readonly ttl = createTtlBar();
 
   private card: ModelCard | null = null;
+  private detailKey = "";
 
   constructor(private readonly settings: Settings, actions: CardActions) {
     this.el = h(
@@ -136,8 +172,9 @@ class CardView {
     });
   }
 
-  /** lastSeenMs is non-null only while the connection is stale or disconnected. */
-  update(card: ModelCard, lastSeenMs: number | null) {
+  /** lastSeenMs is non-null only while the connection is stale or disconnected.
+   *  ageS: whole seconds since this snapshot arrived. */
+  update(card: ModelCard, lastSeenMs: number | null, ageS: number) {
     const s = card.state;
     this.card = card;
     const hint = s.kind === "notLoaded" ? "Double-click to load" : s.kind === "unloading" ? "" : "Right-click to unload";
@@ -154,9 +191,20 @@ class CardView {
     this.title.title = card.description ? `${card.id} — ${card.description}` : card.id;
     this.ring.update(s, this.settings.thresholds.loadTimeoutS);
     this.pill.textContent = PILL[s.kind];
-    const detail = describe(card, this.settings);
-    this.detail.textContent = detail;
-    this.detail.title = detail; // full text when ellipsized
+    const detail = describe(card, this.settings, ageS);
+    const key = `${detail.text}|${detail.warn ?? ""}|${detail.rest ?? ""}`;
+    if (key !== this.detailKey) {
+      this.detailKey = key;
+      const parts: (string | HTMLElement)[] = [];
+      for (const p of [detail.text, detail.warn ? h("span", { class: "warn" }, detail.warn) : "", detail.rest ?? ""]) {
+        if (!p) continue;
+        if (parts.length) parts.push(SEP);
+        parts.push(p);
+      }
+      this.detail.replaceChildren(...parts);
+    }
+    const title = detail.title ?? detail.text; // full text when ellipsized
+    if (this.detail.title !== title) this.detail.title = title;
     // One reserved line: "last seen" while disconnected, else the unload estimate while idle.
     const ttlOn = s.kind === "idle" && card.ttlS !== null && card.ttlRemainingS !== null;
     this.sub.textContent =
@@ -302,6 +350,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
 
   const cards = new Map<string, CardView>();
   let last: Snapshot | null = null;
+  /** When `last` arrived (performance.now()), for ages that keep counting between snapshots. */
+  let lastAt = 0;
 
   let view: View = readView();
   function applyView() {
@@ -407,7 +457,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     live.textContent = s.liveEvents ? "live" : "polling";
     live.title = s.liveEvents
       ? "Receiving live request events"
-      : "Live events unavailable: Busy and stalled-request detection are off";
+      : "Live events unavailable: Busy and output-stall detection are off";
     live.classList.toggle("badge-live", s.liveEvents);
 
     const seen = s.lastOkMs ? ` · last seen ${formatAgo(s.lastOkMs)}` : "";
@@ -418,6 +468,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
 
   function renderCards(s: Snapshot) {
     const lastSeenMs = isStale(s.connection) ? s.lastOkMs : null;
+    const ageS = Math.max(0, Math.floor((performance.now() - lastAt) / 1000));
     const ordered: HTMLElement[] = [];
     const ids = new Set<string>();
     for (const m of s.models) {
@@ -426,7 +477,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
         view = new CardView(settings, actions);
         cards.set(m.id, view);
       }
-      view.update(m, lastSeenMs);
+      view.update(m, lastSeenMs, ageS);
       ids.add(m.id);
       if (!loadedOnly || isLoaded(m)) ordered.push(view.el);
     }
@@ -468,13 +519,15 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
 
   applyView();
 
-  // Re-render every second so "last seen … ago" stays current between snapshots.
+  // Re-render every second so "last seen … ago" and a busy card's "last output … ago" stay
+  // current between snapshots (the poller emits every poll interval, 2 s by default).
   const timer = window.setInterval(render, 1000);
 
   return {
     element,
     update(s) {
       last = s;
+      lastAt = performance.now();
       render();
     },
     destroy() {
