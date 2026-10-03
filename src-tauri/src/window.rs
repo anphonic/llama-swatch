@@ -30,10 +30,10 @@ pub fn fit_inner_height(inner_h: u32, outer_h: u32, work_h: u32, min_inner: u32)
 /// then shows the window. Every step is best effort and the window is always shown, even if a
 /// step fails.
 ///
-/// The restore is done here rather than by the plugin: the plugin's automatic restore runs in
-/// its window-ready hook, which Tauri queues to the event loop and so runs after this setup code
-/// has already shown the window (the plugin is registered with `skip_initial_state`). On first
-/// launch there is no saved state, so the restore only records the current (default) state.
+/// The restore is done here rather than by the plugin (registered with `skip_initial_state`) so
+/// that the restore -> first-launch fit -> show order is explicit in this function instead of
+/// depending on when Tauri runs the plugin's window-ready hook, and the restore happens exactly
+/// once. On first launch there is no saved state, so the restore only records the current state.
 pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool) {
     let Some(w) = app.get_webview_window(MAIN_LABEL) else { return };
     let _ = w.restore_state(STATE_FLAGS);

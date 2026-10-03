@@ -18,9 +18,9 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         // Remembers size/position/maximized across launches. Never resizes by itself; a saved
-        // position that no monitor contains is ignored and the window stays centred. The plugin's
-        // own initial restore runs after setup (on window ready), i.e. after the window is shown,
-        // so it is skipped and `window::prepare` restores the state before showing instead.
+        // position that no monitor contains is ignored. The plugin's automatic initial restore is
+        // skipped and `window::prepare` restores explicitly, so restore -> fit -> show is ordered
+        // there rather than depending on when Tauri runs the plugin's window-ready hook.
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(window::STATE_FLAGS)

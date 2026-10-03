@@ -26,8 +26,8 @@ The header badge shows `live` when it's connected and `polling` when it isn't.
 - On first launch the window opens centred at 481 x 770; on a screen whose work area is too
   short, the height shrinks to fit. It is always resizable, and your size, position and
   maximized state are remembered between launches. If the saved position is on a monitor that
-  is no longer connected, the window opens centred instead. After startup the app never resizes
-  or moves the window by itself.
+  is no longer connected, the saved size is kept and the window opens at the default position
+  on the main screen instead. After startup the app never resizes or moves the window by itself.
 - Cards are one per row at a fixed height, and the header, toolbar, tiles and History columns
   keep their size as data changes, so nothing jumps around. Status banners and error toasts
   overlay the bottom of the window rather than pushing content down.
