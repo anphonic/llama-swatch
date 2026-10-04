@@ -2,7 +2,7 @@
 
 export type ModelState =
   | { kind: "notLoaded" }
-  | { kind: "loading"; elapsedS: number }
+  | { kind: "loading"; elapsedS: number; slow: boolean }
   | { kind: "idle"; uptimeS: number }
   | {
       kind: "busy";

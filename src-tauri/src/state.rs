@@ -9,6 +9,8 @@ use crate::events::InflightView;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Thresholds {
+    /// Slow-load warning: a load past this many seconds is flagged `slow`. It never makes
+    /// the model Stalled; llama-swap's own health-check timeout decides whether a load fails.
     pub load_timeout_s: u64,
     pub stop_timeout_s: u64,
     pub first_byte_timeout_s: u64,
@@ -25,7 +27,8 @@ impl Default for Thresholds {
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ModelState {
     NotLoaded,
-    Loading { elapsed_s: u64 },
+    /// `slow`: loading has lasted longer than `load_timeout_s`. A hint only.
+    Loading { elapsed_s: u64, slow: bool },
     Idle { uptime_s: u64 },
     Busy {
         requests: usize,
@@ -48,7 +51,8 @@ pub enum ModelState {
 /// stream, sets `queued_long`.
 const QUEUED_LONG_FACTOR: u64 = 10;
 
-/// Rules are evaluated top to bottom: Stalled, Loading, Unloading, Busy, Idle, NotLoaded.
+/// Rules are evaluated top to bottom: Stalled (unloading past its timeout), Loading (never
+/// Stalled, only flagged `slow`), Unloading, Busy (may be Stalled), Idle, NotLoaded.
 pub fn derive_state(
     process_state: Option<&str>,
     inflight: &[InflightView],
@@ -57,13 +61,10 @@ pub fn derive_state(
 ) -> ModelState {
     let in_state_s = since_state_change.as_secs();
     match process_state {
-        Some("starting") if in_state_s > t.load_timeout_s => ModelState::Stalled {
-            reason: format!("Loading for {in_state_s} s (timeout {} s)", t.load_timeout_s),
-        },
         Some("stopping") if in_state_s > t.stop_timeout_s => ModelState::Stalled {
             reason: format!("Unloading for {in_state_s} s (timeout {} s)", t.stop_timeout_s),
         },
-        Some("starting") => ModelState::Loading { elapsed_s: in_state_s },
+        Some("starting") => ModelState::Loading { elapsed_s: in_state_s, slow: in_state_s > t.load_timeout_s },
         Some("stopping") => ModelState::Unloading,
         Some("ready") if !inflight.is_empty() => activity(inflight, since_state_change, t),
         Some("ready") => ModelState::Idle { uptime_s: in_state_s },
@@ -138,10 +139,10 @@ mod tests {
             ("stopped", Some("stopped"), vec![], 5, NotLoaded),
             ("shutdown", Some("shutdown"), vec![], 5, NotLoaded),
             ("unknown state", Some("weird"), vec![], 5, NotLoaded),
-            ("loading", Some("starting"), vec![], 10, Loading { elapsed_s: 10 }),
-            ("loading at threshold", Some("starting"), vec![], 120, Loading { elapsed_s: 120 }),
-            ("loading over", Some("starting"), vec![], 121, stalled("Loading for 121 s (timeout 120 s)")),
-            ("loading ignores queued request", Some("starting"), vec![view(200, 0, 200)], 100, Loading { elapsed_s: 100 }),
+            ("loading", Some("starting"), vec![], 10, Loading { elapsed_s: 10, slow: false }),
+            ("loading at threshold", Some("starting"), vec![], 120, Loading { elapsed_s: 120, slow: false }),
+            ("loading over", Some("starting"), vec![], 121, Loading { elapsed_s: 121, slow: true }),
+            ("loading ignores queued request", Some("starting"), vec![view(200, 0, 200)], 100, Loading { elapsed_s: 100, slow: false }),
             ("unloading", Some("stopping"), vec![], 5, Unloading),
             ("unloading over", Some("stopping"), vec![], 31, stalled("Unloading for 31 s (timeout 30 s)")),
             ("unloading ignores requests", Some("stopping"), vec![view(500, 0, 500)], 5, Unloading),
@@ -210,7 +211,8 @@ mod tests {
     #[test]
     fn custom_thresholds_are_respected() {
         let t = Thresholds { load_timeout_s: 10, stop_timeout_s: 5, first_byte_timeout_s: 3, stream_stall_timeout_s: 2 };
-        assert_eq!(derive_state(Some("starting"), &[], secs(11), &t), stalled("Loading for 11 s (timeout 10 s)"));
+        assert_eq!(derive_state(Some("starting"), &[], secs(11), &t), Loading { elapsed_s: 11, slow: true });
+        assert_eq!(derive_state(Some("stopping"), &[], secs(6), &t), stalled("Unloading for 6 s (timeout 5 s)"));
         assert_eq!(derive_state(Some("ready"), &[view(4, 0, 4)], secs(60), &t), stalled("No response for 4 s"));
         assert_eq!(derive_state(Some("ready"), &[view(9, 5, 3)], secs(60), &t), stalled("Output stopped 3 s ago"));
     }
@@ -237,6 +239,8 @@ mod tests {
             v,
             serde_json::json!({"kind":"busy","requests":2,"oldestElapsedS":4,"streaming":0,"queued":2,"lastOutputS":null,"queuedLong":false})
         );
+        let v = serde_json::to_value(Loading { elapsed_s: 121, slow: true }).unwrap();
+        assert_eq!(v, serde_json::json!({"kind":"loading","elapsedS":121,"slow":true}));
         let v = serde_json::to_value(NotLoaded).unwrap();
         assert_eq!(v, serde_json::json!({"kind":"notLoaded"}));
         let v = serde_json::to_value(Thresholds::default()).unwrap();

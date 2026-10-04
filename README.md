@@ -12,10 +12,10 @@ on your LAN, or behind a reverse proxy.
 | State | Looks like | Meaning |
 |---|---|---|
 | Not loaded | dimmed grey ring | Configured in llama-swap, not running |
-| Loading | amber pulsing ring, seconds in the middle | llama-swap is starting the model |
+| Loading | amber pulsing ring, seconds in the middle | llama-swap is starting the model. Past the slow-load warning (default 120 s) the card adds a `slow load` hint; llama-swap's own health-check timeout decides whether the load fails |
 | Idle | solid green ring, TTL bar | Loaded, no requests in flight |
 | Busy | spinning blue arc, request count | At least one request is in flight and remains within its applicable timeout |
-| Stalled | red ring with `!` | Loading/unloading took too long, or the model stopped producing output |
+| Stalled | red ring with `!` | Unloading took too long, or the model stopped producing output |
 | Unloading | fading grey ring | llama-swap is stopping the model |
 
 A busy card shows how many requests are streaming output and how many are still queued for a
@@ -68,7 +68,7 @@ These builds are **not code-signed**, so each OS warns on first launch:
    The saved key is only ever sent to the URL it was saved for. If you change the URL, paste
    the key again.
 
-Stall thresholds (loading timeout, no-first-byte timeout, and so on) are under
+Thresholds (slow-load warning, no-first-byte timeout, and so on) are under
 **Stall detection** in settings.
 
 ## Develop

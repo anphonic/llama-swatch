@@ -72,19 +72,31 @@ function describeBusy(
 }
 
 function describe(card: ModelCard, settings: Settings, ageS: number): Detail {
-  return card.state.kind === "busy"
-    ? describeBusy(card.state, lastOf(card.tokSHistory), ageS, settings.thresholds.streamStallTimeoutS)
-    : { text: describeText(card, settings) };
+  const s = card.state;
+  if (s.kind === "busy") return describeBusy(s, lastOf(card.tokSHistory), ageS, settings.thresholds.streamStallTimeoutS);
+  if (s.kind === "loading") {
+    const text = `Loading ${formatDuration(s.elapsedS)}`;
+    if (!s.slow) return { text };
+    const warn = "slow load";
+    const slowS = settings.thresholds.loadTimeoutS;
+    return {
+      text,
+      warn,
+      title: `${text}${SEP}${warn}
+Taking longer than the slow-load warning (${slowS} s). llama-swap's own health-check timeout decides whether the load fails.`,
+    };
+  }
+  return { text: describeText(card) };
 }
 
-function describeText(card: ModelCard, settings: Settings): string {
+function describeText(card: ModelCard): string {
   const s = card.state;
   const tok = lastOf(card.tokSHistory);
   switch (s.kind) {
     case "notLoaded":
       return card.lastRequestAtMs ? `Last used ${formatAgo(card.lastRequestAtMs)}` : "";
     case "loading":
-      return `Starting for ${formatDuration(s.elapsedS)} · timeout ${formatDuration(settings.thresholds.loadTimeoutS)}`;
+      return `Loading ${formatDuration(s.elapsedS)}`; // see describe
     case "idle":
       return `Up ${formatDuration(s.uptimeS)}${tok !== undefined ? ` · last ${tok.toFixed(1)} tok/s` : ""}`;
     case "busy":

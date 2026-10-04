@@ -305,7 +305,7 @@ mod tests {
         let mut m = MonitorState::new("h");
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "starting", 0)], Some(vec![model("a")]))), t0, WALL);
         let s = m.snapshot(t0 + secs(4), WALL, &Thresholds::default());
-        assert_eq!(card(&s, "a").state, ModelState::Loading { elapsed_s: 4 });
+        assert_eq!(card(&s, "a").state, ModelState::Loading { elapsed_s: 4, slow: false });
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 0)], None)), t0 + secs(5), WALL);
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 0)], None)), t0 + secs(7), WALL);
         let s = m.snapshot(t0 + secs(15), WALL, &Thresholds::default());
