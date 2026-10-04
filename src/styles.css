@@ -9,6 +9,7 @@
   --grey: #9ca3af;
   --green: #16a34a;
   --amber: #d97706;
+  --amber-text: #b45309;
   --blue: #2563eb;
   --red: #dc2626;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -26,6 +27,7 @@
     --grey: #6b7280;
     --green: #22c55e;
     --amber: #f59e0b;
+    --amber-text: #f59e0b;
     --blue: #60a5fa;
     --red: #f87171;
   }
@@ -121,7 +123,7 @@ input {
 .card-title { max-width: 100%; font-weight: 600; line-height: 20px; height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-detail { flex: none; color: var(--muted); line-height: 18px; height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card[data-state="stalled"] .card-detail { color: var(--red); }
-.card-detail .warn { color: var(--amber); }
+.card-detail .warn { color: var(--amber-text); }
 /* Sparkline slot, TTL bar and sub line are always laid out; empty/invisible when unused. */
 .card-spark { flex: none; height: 32px; }
 .card-spark .sparkline { display: block; }
