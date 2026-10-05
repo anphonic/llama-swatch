@@ -42,7 +42,7 @@ export function renderSetup(
         { class: "thresholds" },
         field("load", "Slow-load warning after (s)", load),
         field("stop", "Unloading timeout (s)", stop),
-        field("first-byte", "No first byte after (s)", firstByte),
+        field("first-byte", "No first byte after (s)", firstByte, "Stalled only once a reply has started; otherwise a \"reply slow\" hint"),
         field("stall", "Output stopped for (s)", stall),
       ),
     ),

@@ -19,22 +19,26 @@ on your LAN, or behind a reverse proxy.
 | Unloading | fading grey ring | llama-swap is stopping the model |
 
 A busy card counts requests in three groups, plus how long ago output last arrived, e.g.
-`3 streaming · 1 waiting first token · 2 awaiting reply · last output 4 s ago`:
+`3 streaming · 2 awaiting · last output 4 s ago` (hover the card for the full wording):
 
 - **streaming**: output is arriving.
-- **waiting first token**: the reply has started (llama-swap has seen its headers) but no
-  output yet, e.g. a streaming reply still processing its prompt or waiting for a free slot.
-- **awaiting reply**: nothing has come back yet. A non-streaming chat (`"stream": false`) or an
+- **awaiting**: nothing has come back yet. A non-streaming chat (`"stream": false`) or an
   embeddings request looks like this until it finishes, because its whole reply arrives at once.
+  With llama.cpp backends a streaming request also looks like this while it processes its
+  prompt, since llama.cpp's server sends the reply headers only with its first result.
+- **replying**: the reply has started (llama-swap has seen its headers) but no output has
+  arrived yet. With llama.cpp this is usually brief; it mainly shows up with other backends.
 
 Stalls are judged for the whole model, not per request: while any request is streaming, the
 model is Stalled only when every streaming request has been quiet longer than the stream stall
 timeout, so a request waiting its turn never marks an active model as Stalled. With nothing
-streaming yet, it is Stalled once a started reply has gone longer than the no-first-byte timeout
-without output. A request awaiting a reply never makes the model Stalled, since the monitor
-cannot tell a long non-streaming generation from a stuck one; past the no-first-byte timeout the
-card adds a `reply slow` hint instead. A request waiting for its first token for more than 10
-times that timeout while others stream adds a `waiting long` hint.
+streaming yet, it is Stalled once a replying request has waited longer than the no-first-byte
+timeout without output. An awaiting request never makes the model Stalled, since the monitor
+cannot tell a long non-streaming generation or prompt from a stuck one; past the no-first-byte
+timeout the card adds a `reply slow` hint instead. So that setting drives the Stalled rule only
+for replies that have started, and otherwise drives the `reply slow` hint. A replying request
+that waits for its first token more than 10 times that timeout while others stream adds a
+`waiting long` hint.
 
 Busy and output-stall detection need llama-swap's live event stream (`/api/events`).
 The header badge shows `live` when it's connected and `polling` when it isn't.
@@ -79,7 +83,9 @@ These builds are **not code-signed**, so each OS warns on first launch:
    the key again.
 
 Thresholds (slow-load warning, no-first-byte timeout, and so on) are under
-**Stall detection** in settings.
+**Stall detection** in settings. The no-first-byte timeout marks a model Stalled only when a
+reply has started but sent nothing; a request with no reply yet just gets the `reply slow`
+hint.
 
 ## Develop
 

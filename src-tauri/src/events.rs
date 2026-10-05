@@ -240,6 +240,22 @@ mod tests {
         assert!(v[0].response_started);
         assert_eq!(v[0].resp_bytes, 0);
         assert_eq!(v[0].elapsed.as_secs(), 5, "start time is kept from first sighting");
+
+        // A snapshot (e.g. after a reconnect) also flips an entry already in the table.
+        let mut other = wire_entry(Some(json!({})));
+        other["id"] = json!("8");
+        other["model"] = json!("gemma");
+        t.apply(upsert(decode_upsert(other.clone())), t0);
+        assert!(!t.views_for("gemma", t0)[0].response_started);
+        other["resp_headers"] = json!({"Content-Type": "text/event-stream"});
+        let snap = envelope("inflight", json!({"operation":"snapshot","requests":[other]}));
+        match decode_event(&snap).unwrap() {
+            StreamEvent::Inflight(m) => t.apply(m, t0 + Duration::from_secs(4)),
+            e => panic!("unexpected {e:?}"),
+        }
+        let v = t.views_for("gemma", t0 + Duration::from_secs(4));
+        assert!(v[0].response_started);
+        assert_eq!(v[0].elapsed.as_secs(), 7, "snapshot keeps the survivor's start");
     }
 
     #[test]

@@ -35,11 +35,13 @@ pub enum ModelState {
         oldest_elapsed_s: u64,
         /// Requests that have produced at least one response byte.
         streaming: usize,
-        /// Requests whose reply has started (headers sent) but has no output yet, e.g. a
-        /// streaming reply still processing its prompt or waiting for a free slot.
+        /// Requests whose reply has started (headers sent) but has no output yet. Usually
+        /// brief: llama.cpp's server sends headers only with its first result, even when
+        /// streaming, so this group mainly shows up with other backends.
         waiting_first_token: usize,
-        /// Requests with no reply at all yet. A non-streaming chat (`stream: false`) or an
-        /// embeddings request looks like this until it finishes, so these never stall a model.
+        /// Requests with no reply at all yet: a non-streaming chat (`stream: false`) or an
+        /// embeddings request until it finishes, and with llama.cpp also a streaming request
+        /// still processing its prompt. These never stall a model.
         awaiting_reply: usize,
         /// Seconds since any streaming request last grew; `None` while nothing streams.
         last_output_s: Option<u64>,
@@ -91,8 +93,12 @@ pub fn derive_state(
 ///   `stream_stall_timeout_s` (a byte on any of them counts as output).
 /// - Nothing streams yet: Stalled when the longest *started* wait exceeds `first_byte_timeout_s`.
 /// - *Awaiting* requests never stall: a non-streaming reply sends its headers and body together
-///   when it is done, so the monitor cannot tell one still generating from one that is stuck.
-///   Past `first_byte_timeout_s` they only set the `awaiting_long` hint.
+///   when it is done, and llama.cpp holds back headers until its first result even when
+///   streaming, so the monitor cannot tell one still working from one that is stuck. Past
+///   `first_byte_timeout_s` they only set the `awaiting_long` hint.
+///
+/// So `first_byte_timeout_s` makes a model Stalled only for replies that have started; for
+/// awaiting ones it is the hint threshold.
 ///
 /// A request that queued during loading is timed from when the model became ready
 /// (`ready_for`), not from when it arrived.
@@ -110,7 +116,7 @@ fn activity(inflight: &[InflightView], ready_for: Duration, t: &Thresholds) -> M
             return ModelState::Stalled { reason: format!("Output stopped {quiet} s ago") };
         }
         (None, Some(wait)) if wait > t.first_byte_timeout_s => {
-            return ModelState::Stalled { reason: format!("No output for {wait} s after the reply started") };
+            return ModelState::Stalled { reason: format!("No first token after {wait} s (reply started)") };
         }
         _ => {}
     }
@@ -161,7 +167,7 @@ mod tests {
     }
 
     fn no_first_token(wait: u64) -> ModelState {
-        stalled(&format!("No output for {wait} s after the reply started"))
+        stalled(&format!("No first token after {wait} s (reply started)"))
     }
 
     /// Busy with `requests = streaming + first + awaiting`.
