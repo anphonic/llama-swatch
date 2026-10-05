@@ -14,6 +14,10 @@ use crate::api::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 /// `GET /upstream/{model}/` blocks until the model is up, which can take minutes.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// Most bytes of a refusal body read when a load is answered with a 4xx.
+const REFUSAL_BODY_CAP: usize = 4096;
+/// Most characters of llama-swap's refusal text shown to the user.
+const REFUSAL_REASON_CHARS: usize = 200;
 /// Unloading waits for the upstream process to stop.
 const UNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -29,6 +33,10 @@ pub enum ClientError {
     Http(u16),
     #[error("{0}")]
     Redirect(String),
+    /// llama-swap answered a load with a 4xx and the model is not starting. The message is
+    /// already sanitized for display and holds neither the key nor URL credentials.
+    #[error("{0}")]
+    LoadRefused(String),
     #[error("invalid model id")]
     InvalidModelId,
     #[error("unexpected response: {0}")]
@@ -114,7 +122,11 @@ impl LlamaSwapClient {
     }
 
     async fn send(rb: RequestBuilder) -> Result<Response, ClientError> {
-        let resp = rb.send().await.map_err(|e| ClientError::Unreachable(describe(e)))?;
+        Self::check(rb.send().await.map_err(|e| ClientError::Unreachable(describe(e)))?)
+    }
+
+    /// Maps a response's status to `Ok(resp)` or the matching error.
+    fn check(resp: Response) -> Result<Response, ClientError> {
         match resp.status() {
             s if s.is_success() => Ok(resp),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ClientError::Unauthorized),
@@ -163,16 +175,36 @@ impl LlamaSwapClient {
     }
 
     /// Asks llama-swap to start `id` by requesting its upstream root. The call blocks until the
-    /// model is up (minutes, possibly). Callers pass only ids llama-swap itself listed, so any
-    /// answer below 500 means the upstream came up, even a 404 from one with no root page; the
-    /// body is ignored. 5xx, redirects, a rejected key and network errors are failures.
+    /// model is up (minutes, possibly). A 2xx means it came up. A 4xx is ambiguous: llama-swap
+    /// refuses with one (unknown model, path in `ignorePaths`, no router) without starting
+    /// anything, but a started upstream with no root page answers 404 too. So on a 4xx `/running`
+    /// is asked once: a model listed as `ready` or `starting` is a success, anything else (or no
+    /// answer) is [`ClientError::LoadRefused`] with llama-swap's capped, sanitized reason. 5xx,
+    /// redirects, a rejected key (401/403) and network errors fail as for any other call.
     pub async fn load_model(&self, id: &str) -> Result<(), ClientError> {
         let path = format!("/upstream/{}/", encode_segment(id)?);
-        match Self::send(self.get(&path).timeout(LOAD_TIMEOUT)).await {
-            Ok(_) | Err(ClientError::NotFound) => Ok(()),
-            Err(ClientError::Http(code)) if code < 500 => Ok(()),
-            Err(e) => Err(e),
+        let resp = self
+            .get(&path)
+            .timeout(LOAD_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| ClientError::Unreachable(describe(e)))?;
+        let status = resp.status();
+        if !status.is_client_error() || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            return Self::check(resp).map(drop);
         }
+        let body = read_capped(resp, REFUSAL_BODY_CAP).await;
+        let started = self.running().await.is_ok_and(|running| {
+            running.iter().any(|m| m.model == id && matches!(m.state.as_str(), "ready" | "starting"))
+        });
+        if started {
+            return Ok(());
+        }
+        let mut reason = sanitize_reason(&redact(&body, self.key.as_deref()));
+        if reason.is_empty() {
+            reason = format!("HTTP {}", status.as_u16());
+        }
+        Err(ClientError::LoadRefused(format!("llama-swap didn't start {}: {reason}", sanitize_reason(id))))
     }
 
     pub async fn unload_model(&self, id: &str) -> Result<(), ClientError> {
@@ -184,6 +216,57 @@ impl LlamaSwapClient {
     pub async fn events(&self) -> Result<Response, ClientError> {
         Self::send(self.get("/api/events").header("Accept", "text/event-stream")).await
     }
+}
+
+/// At most `cap` bytes of the body, decoded lossily; a read error ends the body early.
+async fn read_capped(mut resp: Response, cap: usize) -> String {
+    let mut buf = Vec::new();
+    while buf.len() < cap {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk[..chunk.len().min(cap - buf.len())]),
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Server text with the API key and any `user:password@` in a URL removed.
+fn redact(text: &str, key: Option<&str>) -> String {
+    let mut out = match key {
+        Some(k) => text.replace(k, "<redacted>"),
+        None => text.to_string(),
+    };
+    let mut from = 0;
+    while let Some(i) = out[from..].find("://") {
+        let host = from + i + 3;
+        let rest = &out[host..];
+        let end = rest.find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace()).unwrap_or(rest.len());
+        match rest[..end].rfind('@') {
+            Some(at) => out.replace_range(host..host + at + 1, ""),
+            None => from = host,
+        }
+    }
+    out
+}
+
+/// Server text made safe to show: control, bidi and zero-width characters become spaces,
+/// whitespace runs collapse, and the result is cut to [`REFUSAL_REASON_CHARS`] characters.
+fn sanitize_reason(text: &str) -> String {
+    let cleaned: String = text
+        .chars()
+        .map(|c| match c {
+            c if c.is_control() => ' ',
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' => ' ',
+            c => c,
+        })
+        .collect();
+    let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.chars().count() <= REFUSAL_REASON_CHARS {
+        return joined;
+    }
+    let mut cut: String = joined.chars().take(REFUSAL_REASON_CHARS - 1).collect();
+    cut.push('\u{2026}');
+    cut
 }
 
 /// Percent-encodes `id` as exactly one URL path segment: everything but unreserved characters is
