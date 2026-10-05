@@ -8,7 +8,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn unwrap_ok(o: PollOutcome) -> llama_swap_monitor_lib::poller::PollData {
     match o {
-        PollOutcome::Ok(d) => d,
+        PollOutcome::Ok(d) => *d,
         other => panic!("expected Ok, got {other:?}"),
     }
 }

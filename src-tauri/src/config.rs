@@ -321,7 +321,7 @@ mod tests {
     fn save_always_on_top_updates_only_that_field() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        assert_eq!(save_always_on_top(&path, true).unwrap(), false, "unconfigured: nothing written");
+        assert!(!save_always_on_top(&path, true).unwrap(), "unconfigured: nothing written");
         assert!(!path.exists());
         std::fs::write(&path, r#"{"baseUrl":"box:9000","pollIntervalMs":3000}"#).unwrap();
         assert!(save_always_on_top(&path, true).unwrap());

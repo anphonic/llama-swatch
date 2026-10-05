@@ -257,15 +257,15 @@ mod tests {
             ..Default::default()
         }
     }
-    fn data(running: Vec<RunningModel>, models: Option<Vec<ModelEntry>>) -> PollData {
-        PollData {
+    fn data(running: Vec<RunningModel>, models: Option<Vec<ModelEntry>>) -> Box<PollData> {
+        Box::new(PollData {
             latency: Duration::from_millis(12),
             running,
             models,
             version: None,
             stats: Feature::Failed,
             activity: Feature::Failed,
-        }
+        })
     }
     fn card<'a>(s: &'a Snapshot, id: &str) -> &'a ModelCard {
         s.models.iter().find(|m| m.id == id).unwrap_or_else(|| panic!("no card {id}"))
