@@ -18,13 +18,23 @@ on your LAN, or behind a reverse proxy.
 | Stalled | red ring with `!` | Unloading took too long, or the model stopped producing output |
 | Unloading | fading grey ring | llama-swap is stopping the model |
 
-A busy card shows how many requests are streaming output and how many are still queued for a
-free slot, plus how long ago output last arrived, e.g. `3 streaming · 2 queued · last output 4 s ago`.
+A busy card counts requests in three groups, plus how long ago output last arrived, e.g.
+`3 streaming · 1 waiting first token · 2 awaiting reply · last output 4 s ago`:
+
+- **streaming**: output is arriving.
+- **waiting first token**: the reply has started (llama-swap has seen its headers) but no
+  output yet, e.g. a streaming reply still processing its prompt or waiting for a free slot.
+- **awaiting reply**: nothing has come back yet. A non-streaming chat (`"stream": false`) or an
+  embeddings request looks like this until it finishes, because its whole reply arrives at once.
+
 Stalls are judged for the whole model, not per request: while any request is streaming, the
 model is Stalled only when every streaming request has been quiet longer than the stream stall
 timeout, so a request waiting its turn never marks an active model as Stalled. With nothing
-streaming yet, it is Stalled once the longest wait passes the no-first-byte timeout. A request
-queued for more than 10 times that timeout while others stream adds a `queued long` hint.
+streaming yet, it is Stalled once a started reply has gone longer than the no-first-byte timeout
+without output. A request awaiting a reply never makes the model Stalled, since the monitor
+cannot tell a long non-streaming generation from a stuck one; past the no-first-byte timeout the
+card adds a `reply slow` hint instead. A request waiting for its first token for more than 10
+times that timeout while others stream adds a `waiting long` hint.
 
 Busy and output-stall detection need llama-swap's live event stream (`/api/events`).
 The header badge shows `live` when it's connected and `polling` when it isn't.

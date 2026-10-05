@@ -10,12 +10,16 @@ export type ModelState =
       oldestElapsedS: number;
       /** Requests that have produced output. */
       streaming: number;
-      /** Requests still waiting for their first byte. */
-      queued: number;
+      /** Requests whose reply has started (headers sent) but has no output yet. */
+      waitingFirstToken: number;
+      /** Requests with no reply yet; a non-streaming or embeddings request looks like this until done. */
+      awaitingReply: number;
       /** Seconds since any streaming request last produced output; null while nothing streams. */
       lastOutputS: number | null;
-      /** Hint: a queued request has waited over 10x the first-byte timeout while others stream. */
-      queuedLong: boolean;
+      /** Hint: a request has waited for its first token over 10x the first-byte timeout while others stream. */
+      firstTokenLong: boolean;
+      /** Hint: a request has had no reply for longer than the first-byte timeout. Never Stalled. */
+      awaitingLong: boolean;
     }
   | { kind: "stalled"; reason: string }
   | { kind: "unloading" };
