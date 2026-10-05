@@ -33,10 +33,14 @@ pub enum ClientError {
     Http(u16),
     #[error("{0}")]
     Redirect(String),
-    /// llama-swap answered a load with a 4xx and the model is not starting. The message is
-    /// already sanitized for display and holds neither the key nor URL credentials.
-    #[error("{0}")]
+    /// llama-swap answered a load with a 4xx and `/running` shows the model is not starting.
+    /// Holds llama-swap's reason, already sanitized for display (no key, URL credentials or query).
+    #[error("llama-swap refused it: {0}")]
     LoadRefused(String),
+    /// llama-swap answered a load with a 4xx and `/running` could not be read to tell whether the
+    /// model started. Holds the whole message, already sanitized for display.
+    #[error("{0}")]
+    LoadUnconfirmed(String),
     #[error("invalid model id")]
     InvalidModelId,
     #[error("unexpected response: {0}")]
@@ -178,9 +182,10 @@ impl LlamaSwapClient {
     /// model is up (minutes, possibly). A 2xx means it came up. A 4xx is ambiguous: llama-swap
     /// refuses with one (unknown model, path in `ignorePaths`, no router) without starting
     /// anything, but a started upstream with no root page answers 404 too. So on a 4xx `/running`
-    /// is asked once: a model listed as `ready` or `starting` is a success, anything else (or no
-    /// answer) is [`ClientError::LoadRefused`] with llama-swap's capped, sanitized reason. 5xx,
-    /// redirects, a rejected key (401/403) and network errors fail as for any other call.
+    /// is asked once: a model listed as `ready` or `starting` is a success, anything else is
+    /// [`ClientError::LoadRefused`] with llama-swap's capped, sanitized reason, and a `/running`
+    /// that fails is [`ClientError::LoadUnconfirmed`]. 5xx, redirects, a rejected key (401/403)
+    /// and network errors fail as for any other call.
     pub async fn load_model(&self, id: &str) -> Result<(), ClientError> {
         let path = format!("/upstream/{}/", encode_segment(id)?);
         let resp = self
@@ -193,18 +198,27 @@ impl LlamaSwapClient {
         if !status.is_client_error() || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             return Self::check(resp).map(drop);
         }
-        let body = read_capped(resp, REFUSAL_BODY_CAP).await;
-        let started = self.running().await.is_ok_and(|running| {
-            running.iter().any(|m| m.model == id && matches!(m.state.as_str(), "ready" | "starting"))
-        });
-        if started {
-            return Ok(());
+        // Read past the cap by the key's length so a key straddling the cap is redacted whole.
+        let key = self.key.as_deref();
+        let body = read_capped(resp, REFUSAL_BODY_CAP + key.map_or(0, str::len)).await;
+        let reason = sanitize_reason(&redact(&body, key));
+        let code = status.as_u16();
+        match self.running().await {
+            Ok(running)
+                if running.iter().any(|m| m.model == id && matches!(m.state.as_str(), "ready" | "starting")) =>
+            {
+                Ok(())
+            }
+            Ok(_) if reason.is_empty() => Err(ClientError::LoadRefused(format!("HTTP {code}"))),
+            Ok(_) => Err(ClientError::LoadRefused(reason)),
+            Err(_) => {
+                let mut msg = format!("llama-swap answered HTTP {code} and the model list could not be checked");
+                if !reason.is_empty() {
+                    msg = format!("{msg}: {reason}");
+                }
+                Err(ClientError::LoadUnconfirmed(msg))
+            }
         }
-        let mut reason = sanitize_reason(&redact(&body, self.key.as_deref()));
-        if reason.is_empty() {
-            reason = format!("HTTP {}", status.as_u16());
-        }
-        Err(ClientError::LoadRefused(format!("llama-swap didn't start {}: {reason}", sanitize_reason(id))))
     }
 
     pub async fn unload_model(&self, id: &str) -> Result<(), ClientError> {
@@ -230,21 +244,36 @@ async fn read_capped(mut resp: Response, cap: usize) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-/// Server text with the API key and any `user:password@` in a URL removed.
+/// Server text with the API key, any `user:password@` and any `?query` in a URL removed. A
+/// trailing part of `text` that could be the start of the key (cut off by a read cap) is dropped.
 fn redact(text: &str, key: Option<&str>) -> String {
     let mut out = match key {
-        Some(k) => text.replace(k, "<redacted>"),
+        Some(k) => {
+            // Longest proper prefix of the key that the text ends with.
+            let cut = (1..k.len().min(text.len() + 1))
+                .rev()
+                .map(|n| text.len() - n)
+                .find(|&at| text.is_char_boundary(at) && k.as_bytes().starts_with(&text.as_bytes()[at..]))
+                .unwrap_or(text.len());
+            text[..cut].replace(k, "<redacted>")
+        }
         None => text.to_string(),
     };
     let mut from = 0;
     while let Some(i) = out[from..].find("://") {
         let host = from + i + 3;
         let rest = &out[host..];
-        let end = rest.find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace()).unwrap_or(rest.len());
-        match rest[..end].rfind('@') {
-            Some(at) => out.replace_range(host..host + at + 1, ""),
-            None => from = host,
+        let url_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let end = rest[..url_end].find(['/', '?', '#']).unwrap_or(url_end);
+        if let Some(at) = rest[..end].rfind('@') {
+            out.replace_range(host..host + at + 1, "");
+            continue;
         }
+        if let Some(q) = rest[..url_end].find('?') {
+            let q_end = rest[q..url_end].find('#').map_or(url_end, |f| q + f);
+            out.replace_range(host + q..host + q_end, "");
+        }
+        from = host;
     }
     out
 }
@@ -471,6 +500,24 @@ mod tests {
             Err(ClientError::Unreachable(m)) => assert!(m.contains("connection refused"), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn read_capped_stops_at_the_cap() {
+        let server = MockServer::start().await;
+        Mock::given(any()).respond_with(ResponseTemplate::new(409).set_body_string("y".repeat(100_000))).mount(&server).await;
+        let resp = reqwest::get(server.uri()).await.unwrap();
+        assert_eq!(read_capped(resp, REFUSAL_BODY_CAP).await.len(), REFUSAL_BODY_CAP);
+        let resp = reqwest::get(server.uri()).await.unwrap();
+        assert_eq!(read_capped(resp, 1_000_000).await.len(), 100_000);
+    }
+
+    #[test]
+    fn redact_drops_a_trailing_key_prefix() {
+        assert_eq!(redact("a k1 b k1", Some("k1")), "a <redacted> b <redacted>");
+        assert_eq!(redact("end k", Some("key")), "end ");
+        assert_eq!(redact("end ke", Some("key")), "end ");
+        assert_eq!(redact("end kx", Some("key")), "end kx");
     }
 
     #[test]

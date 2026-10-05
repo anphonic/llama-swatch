@@ -270,8 +270,8 @@ async fn load_refused_by_ignore_paths_reports_llama_swaps_reason() {
     mount_running(&server, &[("other", "ready")]).await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
     let err = client.load_model("m").await.unwrap_err();
-    assert_eq!(err.to_string(), format!("llama-swap didn't start m: {body}"));
-    assert_eq!(err, ClientError::LoadRefused(format!("llama-swap didn't start m: {body}")));
+    assert_eq!(err, ClientError::LoadRefused(body.into()));
+    assert_eq!(err.to_string(), format!("llama-swap refused it: {body}"));
 }
 
 #[tokio::test]
@@ -283,7 +283,7 @@ async fn load_of_unknown_model_is_refused() {
         .await;
     mount_running(&server, &[]).await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
-    assert_eq!(refused(client.load_model("nope").await), "llama-swap didn't start nope: model not found");
+    assert_eq!(refused(client.load_model("nope").await), "model not found");
 }
 
 #[tokio::test]
@@ -292,7 +292,7 @@ async fn load_refusal_with_empty_body_names_the_status() {
     Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(418)).mount(&server).await;
     mount_running(&server, &[("m", "stopped")]).await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
-    assert_eq!(refused(client.load_model("m").await), "llama-swap didn't start m: HTTP 418");
+    assert_eq!(refused(client.load_model("m").await), "HTTP 418");
 }
 
 #[tokio::test]
@@ -329,15 +329,64 @@ async fn load_5xx_is_an_error_without_checking_running() {
 }
 
 #[tokio::test]
-async fn load_refusal_when_running_is_unavailable() {
+async fn load_refused_when_model_is_stopping_or_listed_under_another_id() {
+    let server = MockServer::start().await;
+    Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(409).set_body_string("no")).mount(&server).await;
+    Mock::given(path("/upstream/n/")).respond_with(ResponseTemplate::new(404).set_body_string("no")).mount(&server).await;
+    mount_running(&server, &[("m", "stopping"), ("n-other", "ready")]).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(refused(client.load_model("m").await), "no");
+    assert_eq!(refused(client.load_model("n").await), "no");
+}
+
+#[tokio::test]
+async fn load_403_is_unauthorized_without_checking_running() {
+    let server = MockServer::start().await;
+    Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(403)).mount(&server).await;
+    Mock::given(path("/running")).respond_with(json_body(RUNNING)).expect(0).mount(&server).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(client.load_model("m").await, Err(ClientError::Unauthorized));
+}
+
+fn unconfirmed(res: Result<(), ClientError>) -> String {
+    match res {
+        Err(e @ ClientError::LoadUnconfirmed(_)) => e.to_string(),
+        other => panic!("expected LoadUnconfirmed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn load_is_unconfirmed_when_running_fails() {
     let server = MockServer::start().await;
     Mock::given(path("/upstream/m/"))
         .respond_with(ResponseTemplate::new(404).set_body_string("no router for model"))
         .mount(&server)
         .await;
+    Mock::given(path("/upstream/e/")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
     Mock::given(path("/running")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
-    assert_eq!(refused(client.load_model("m").await), "llama-swap didn't start m: no router for model");
+    assert_eq!(
+        unconfirmed(client.load_model("m").await),
+        "llama-swap answered HTTP 404 and the model list could not be checked: no router for model"
+    );
+    assert_eq!(
+        unconfirmed(client.load_model("e").await),
+        "llama-swap answered HTTP 404 and the model list could not be checked"
+    );
+}
+
+#[tokio::test]
+async fn load_is_unconfirmed_when_running_times_out() {
+    // /running uses the 3 s request timeout; answer just after it.
+    let server = MockServer::start().await;
+    Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(404).set_body_string("nope")).mount(&server).await;
+    Mock::given(path("/running"))
+        .respond_with(json_body(RUNNING).set_delay(Duration::from_millis(3300)))
+        .mount(&server)
+        .await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    let msg = unconfirmed(client.load_model("m").await);
+    assert!(msg.ends_with("could not be checked: nope"), "{msg}");
 }
 
 #[tokio::test]
@@ -349,7 +398,7 @@ async fn load_refusal_body_is_capped_and_sanitized() {
     mount_running(&server, &[]).await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
     let msg = refused(client.load_model("m").await);
-    let reason = msg.strip_prefix("llama-swap didn't start m: ").unwrap_or_else(|| panic!("{msg}"));
+    let reason = msg.as_str();
     assert!(reason.starts_with("bad [31m thing here xxx"), "{reason}");
     assert!(reason.chars().count() <= 200, "{}", reason.chars().count());
     assert!(!msg.chars().any(|c| c.is_control() || c == '\u{202e}'), "{msg:?}");
@@ -366,6 +415,34 @@ async fn load_refusal_never_echoes_the_key_or_credentials() {
     assert!(!msg.contains("s3cret-key"), "{msg}");
     assert!(!msg.contains("user:pw"), "{msg}");
     assert!(msg.contains("http://example.com/x"), "{msg}");
+}
+
+#[tokio::test]
+async fn load_refusal_drops_url_query_strings() {
+    let server = MockServer::start().await;
+    let body = "see http://example.com/a?token=abc&x=1#frag and https://example.com/b?k=v done";
+    Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(409).set_body_string(body)).mount(&server).await;
+    mount_running(&server, &[]).await;
+    let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
+    assert_eq!(
+        refused(client.load_model("m").await),
+        "see http://example.com/a#frag and https://example.com/b done"
+    );
+}
+
+#[tokio::test]
+async fn load_refusal_never_leaks_a_key_cut_at_the_body_cap() {
+    let key = "s3cret-key-0123456789";
+    // Whitespace collapses, so text near the 4096-byte cap lands in the shown reason.
+    for start in [4090, 4096 - key.len() + 1, 4095, 4100] {
+        let server = MockServer::start().await;
+        let body = format!("{}{key} tail", " ".repeat(start));
+        Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(409).set_body_string(body)).mount(&server).await;
+        mount_running(&server, &[]).await;
+        let client = LlamaSwapClient::new(&server.uri(), Some(key.into())).unwrap();
+        let msg = refused(client.load_model("m").await);
+        assert!(!msg.contains('s'), "start {start}: {msg}"); // no part of the key, however short
+    }
 }
 
 #[tokio::test]
