@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 
 use crate::backoff::Backoff;
 use crate::client::{ClientError, LlamaSwapClient};
-use crate::events::{decode_event, EventStream, StreamEvent};
+use crate::events::{decode_event, health_signal, EventStream, StreamEvent};
 use crate::monitor::{MonitorState, Snapshot};
 use crate::poller::{poll_once, Feature, PollOutcome};
 use crate::sse::SseParser;
@@ -169,20 +169,17 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
                     for payload in parser.push(&chunk) {
                         // Only the outcome is kept: payloads can carry request headers, so
                         // neither they nor serde's error text (which may quote them) leave here.
-                        let decoded = match decode_event(&payload) {
+                        let result = decode_event(&payload);
+                        let signal = health_signal(&result);
+                        match result {
                             Ok(StreamEvent::Inflight(msg)) => {
                                 shared.with_state(|s| s.apply_inflight(msg, Instant::now()));
                                 changed = true;
-                                Some(true)
                             }
-                            Ok(StreamEvent::ModelStatus) => {
-                                shared.wake.notify_one();
-                                Some(true)
-                            }
-                            Ok(StreamEvent::Other) => None,
-                            Err(_) => Some(false),
-                        };
-                        if let Some(ok) = decoded {
+                            Ok(StreamEvent::ModelStatus) => shared.wake.notify_one(),
+                            Ok(StreamEvent::Other) | Err(_) => {}
+                        }
+                        if let Some(ok) = signal {
                             changed |= record_decode(&shared, ok);
                         }
                     }

@@ -151,15 +151,34 @@ impl InflightTable {
     }
 }
 
+/// What one frame says about whether this monitor can read the in-flight data the cards need:
+/// `Some(true)` proves it can, `Some(false)` is a decode failure, `None` proves nothing.
+///
+/// Only an inflight `snapshot`, or an `upsert` carrying an entry, counts as success: those are
+/// the frames whose entries had to decode. `remove` (just an id), `modelStatus` and other event
+/// types are neutral. If they counted, a llama-swap that changed only the entry shape would keep
+/// the stream `Live` on removes alone, with an empty table showing Idle while models serve.
+pub fn health_signal(r: &Result<StreamEvent, serde_json::Error>) -> Option<bool> {
+    match r {
+        Ok(StreamEvent::Inflight(m)) => match m.operation.as_str() {
+            "snapshot" => Some(true),
+            "upsert" if m.request.is_some() => Some(true),
+            _ => None,
+        },
+        Ok(StreamEvent::ModelStatus | StreamEvent::Other) => None,
+        Err(_) => Some(false),
+    }
+}
+
 /// Health of the `/api/events` stream, as shown in the header badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventStream {
     /// Not connected, or the server has no `/api/events`.
     Offline,
-    /// Stream open, no event decoded yet on this connection.
+    /// Stream open, no in-flight snapshot or upsert decoded yet on this connection.
     Connected,
-    /// At least one event decoded on this connection, and fewer than
+    /// At least one in-flight snapshot or upsert decoded on this connection, and fewer than
     /// [`UNREADABLE_AFTER`] decode failures since the last success.
     Live,
     /// [`UNREADABLE_AFTER`] or more events in a row on this connection failed to decode.
@@ -173,9 +192,10 @@ pub const UNREADABLE_AFTER: u32 = 3;
 /// Per-connection decode bookkeeping behind [`EventStream`]. Holds only counts: payload and
 /// error text never reach it (payloads can carry request headers).
 ///
-/// Only events this monitor reads (`inflight`, `modelStatus`) are recorded. Other event
-/// types (logs, metrics) are neither a success nor a failure: they prove nothing about the
-/// data the cards need.
+/// Fed by [`health_signal`]: a success is an inflight `snapshot` or `upsert` whose entries
+/// decoded; a failure is a frame that did not decode. Everything else (`remove`, `modelStatus`,
+/// logs, metrics) is neutral: it neither resets nor adds to the failure streak, because it
+/// proves nothing about the entry data the cards need.
 #[derive(Debug, Default)]
 pub struct DecodeHealth {
     connected: bool,
@@ -495,5 +515,62 @@ mod tests {
             .map(|e| serde_json::to_value(e).unwrap())
             .collect();
         assert_eq!(v, [json!("offline"), json!("connected"), json!("live"), json!("unreadable")]);
+    }
+
+    /// Feeds raw frames through `decode_event` and `health_signal` the way the runtime does.
+    fn feed(h: &mut DecodeHealth, payloads: &[String]) {
+        for p in payloads {
+            if let Some(ok) = health_signal(&decode_event(p)) {
+                h.record(ok);
+            }
+        }
+    }
+
+    #[test]
+    fn only_snapshot_and_upsert_prove_the_stream_readable() {
+        let good_upsert = envelope("inflight", json!({"operation":"upsert","request":wire_entry(None)}));
+        let snapshot = envelope("inflight", json!({"operation":"snapshot","requests":[wire_entry(None)]}));
+        let empty_snapshot = envelope("inflight", json!({"operation":"snapshot","requests":null}));
+        let remove = envelope("inflight", json!({"operation":"remove","id":"7"}));
+        let upsert_without_entry = envelope("inflight", json!({"operation":"upsert"}));
+        let model_status = envelope("modelStatus", json!({}));
+        let log = envelope("logData", json!("line"));
+        assert_eq!(health_signal(&decode_event(&good_upsert)), Some(true));
+        assert_eq!(health_signal(&decode_event(&snapshot)), Some(true));
+        assert_eq!(health_signal(&decode_event(&empty_snapshot)), Some(true));
+        assert_eq!(health_signal(&decode_event(&remove)), None);
+        assert_eq!(health_signal(&decode_event(&upsert_without_entry)), None);
+        assert_eq!(health_signal(&decode_event(&model_status)), None);
+        assert_eq!(health_signal(&decode_event(&log)), None);
+        assert_eq!(health_signal(&decode_event("{not json")), Some(false));
+    }
+
+    #[test]
+    fn broken_upserts_are_not_masked_by_removes_and_model_status() {
+        use EventStream::*;
+        // A newer llama-swap where only the upsert entry shape changed.
+        let mut bad_entry = wire_entry(None);
+        bad_entry["elapsed_ms"] = json!("3000");
+        let bad_upsert = envelope("inflight", json!({"operation":"upsert","request":bad_entry}));
+        let remove = envelope("inflight", json!({"operation":"remove","id":"7"}));
+        let model_status = envelope("modelStatus", json!({}));
+        assert!(decode_event(&bad_upsert).is_err(), "test frame must fail to decode");
+
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for _ in 0..5 {
+            feed(&mut h, &[bad_upsert.clone()]);
+            assert_ne!(h.state(), Live);
+            assert!(!h.sees_activity(), "a model must not show Idle while upserts fail");
+            feed(&mut h, &[remove.clone(), model_status.clone()]);
+            assert_ne!(h.state(), Live);
+            assert!(!h.sees_activity());
+        }
+        assert_eq!(h.state(), Unreadable);
+
+        let good_upsert = envelope("inflight", json!({"operation":"upsert","request":wire_entry(None)}));
+        feed(&mut h, &[good_upsert]);
+        assert_eq!(h.state(), Live);
+        assert!(h.sees_activity());
     }
 }

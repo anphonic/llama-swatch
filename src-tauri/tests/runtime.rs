@@ -146,6 +146,41 @@ async fn undecodable_events_are_reported_as_unreadable() {
 }
 
 #[tokio::test]
+async fn upserts_that_fail_are_not_masked_by_removes_and_model_status() {
+    let server = MockServer::start().await;
+    // Only the upsert entry shape changed (elapsed_ms became a string); removes and
+    // modelStatus still decode. They must not keep the stream Live.
+    let frame = |kind: &str, data: serde_json::Value| {
+        let env = serde_json::json!({ "type": kind, "data": data.to_string() });
+        format!("event:message\ndata:{env}\n\n")
+    };
+    let bad_upsert = frame(
+        "inflight",
+        serde_json::json!({"operation":"upsert","request":{"id":"1","model":"qwen3-30b","elapsed_ms":"900","resp_bytes":0}}),
+    );
+    let remove = frame("inflight", serde_json::json!({"operation":"remove","id":"1"}));
+    let model_status = frame("modelStatus", serde_json::json!({}));
+    let body = format!("{bad_upsert}{remove}{model_status}").repeat(3);
+    Mock::given(path("/api/events"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(body.into_bytes(), "text/event-stream")
+                .set_delay(Duration::from_millis(500)),
+        )
+        .mount(&server)
+        .await;
+    mount_healthy(&server).await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    let s = wait_for(&mut rx, "unreadable, never live", |s| {
+        assert_ne!(s.event_stream, EventStream::Live, "removes and modelStatus must not make the stream live");
+        s.event_stream == EventStream::Unreadable
+    })
+    .await;
+    assert_eq!(state_of(&s, "qwen3-30b"), Some(&ModelState::Loaded));
+}
+
+#[tokio::test]
 async fn stopping_the_handle_stops_snapshots() {
     let server = MockServer::start().await;
     mount_healthy(&server).await;
