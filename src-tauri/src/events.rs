@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::api::null_default;
 
@@ -148,6 +148,87 @@ impl InflightTable {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+}
+
+/// Health of the `/api/events` stream, as shown in the header badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventStream {
+    /// Not connected, or the server has no `/api/events`.
+    Offline,
+    /// Stream open, no event decoded yet on this connection.
+    Connected,
+    /// At least one event decoded on this connection, and fewer than
+    /// [`UNREADABLE_AFTER`] decode failures since the last success.
+    Live,
+    /// [`UNREADABLE_AFTER`] or more events in a row on this connection failed to decode.
+    Unreadable,
+}
+
+/// Consecutive decode failures that make the stream `Unreadable`. One or two stray bad frames
+/// change nothing; a third in a row means this llama-swap sends events we cannot read.
+pub const UNREADABLE_AFTER: u32 = 3;
+
+/// Per-connection decode bookkeeping behind [`EventStream`]. Holds only counts: payload and
+/// error text never reach it (payloads can carry request headers).
+///
+/// Only events this monitor reads (`inflight`, `modelStatus`) are recorded. Other event
+/// types (logs, metrics) are neither a success nor a failure: they prove nothing about the
+/// data the cards need.
+#[derive(Debug, Default)]
+pub struct DecodeHealth {
+    connected: bool,
+    decoded: bool,
+    consecutive_failures: u32,
+}
+
+impl DecodeHealth {
+    /// A new connection: all counts start over.
+    pub fn connect(&mut self) {
+        *self = Self { connected: true, ..Self::default() };
+    }
+
+    pub fn disconnect(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Records one decode attempt of an event the monitor reads.
+    pub fn record(&mut self, ok: bool) {
+        if ok {
+            self.decoded = true;
+            self.consecutive_failures = 0;
+        } else {
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        }
+    }
+
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+
+    pub fn state(&self) -> EventStream {
+        if !self.connected {
+            EventStream::Offline
+        } else if self.consecutive_failures >= UNREADABLE_AFTER {
+            EventStream::Unreadable
+        } else if self.decoded {
+            EventStream::Live
+        } else {
+            EventStream::Connected
+        }
+    }
+
+    /// Whether "no requests in flight" can be believed, i.e. a ready model may show as Idle.
+    /// `Connected` counts while nothing has failed to decode: llama-swap may send nothing while
+    /// idle, and the first request's events either decode (then `Live`) or fail (then this turns
+    /// false at once, before `Unreadable`). Offline and Unreadable never do.
+    pub fn sees_activity(&self) -> bool {
+        match self.state() {
+            EventStream::Live => true,
+            EventStream::Connected => self.consecutive_failures == 0,
+            EventStream::Offline | EventStream::Unreadable => false,
+        }
     }
 }
 
@@ -334,5 +415,85 @@ mod tests {
         assert_eq!(t.views_for("nope", now).len(), 0);
         t.clear();
         assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn decode_health_states() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        assert_eq!(h.state(), Offline);
+        assert!(!h.sees_activity());
+        h.connect();
+        assert_eq!(h.state(), Connected);
+        assert!(h.sees_activity(), "connected, nothing failed: idle is believable");
+        h.record(true);
+        assert_eq!(h.state(), Live);
+        assert!(h.sees_activity());
+        h.disconnect();
+        assert_eq!(h.state(), Offline);
+        assert!(!h.sees_activity());
+    }
+
+    #[test]
+    fn decode_health_tolerates_stray_bad_frames() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        h.connect();
+        h.record(true);
+        h.record(false);
+        h.record(false);
+        assert_eq!(h.state(), Live, "two stray failures after a success");
+        assert!(h.sees_activity());
+        h.record(true);
+        h.record(false);
+        h.record(false);
+        assert_eq!(h.state(), Live, "a success resets the run of failures");
+        h.record(false);
+        assert_eq!(h.state(), Unreadable);
+        assert_eq!(h.consecutive_failures(), UNREADABLE_AFTER);
+        assert!(!h.sees_activity());
+        h.record(true);
+        assert_eq!(h.state(), Live, "readable again after a success");
+    }
+
+    #[test]
+    fn decode_health_failures_before_any_success() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        h.connect();
+        h.record(false);
+        assert_eq!(h.state(), Connected);
+        assert!(!h.sees_activity(), "a failure before any success: idle is not believable");
+        h.record(false);
+        h.record(false);
+        assert_eq!(h.state(), Unreadable);
+    }
+
+    #[test]
+    fn decode_health_resets_on_reconnect() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for _ in 0..5 {
+            h.record(false);
+        }
+        assert_eq!(h.state(), Unreadable);
+        h.connect();
+        assert_eq!(h.state(), Connected);
+        assert_eq!(h.consecutive_failures(), 0);
+        assert!(h.sees_activity());
+        h.record(true);
+        h.disconnect();
+        h.connect();
+        assert_eq!(h.state(), Connected, "a success on an earlier connection does not carry over");
+    }
+
+    #[test]
+    fn event_stream_serializes_camel_case() {
+        let v: Vec<_> = [EventStream::Offline, EventStream::Connected, EventStream::Live, EventStream::Unreadable]
+            .iter()
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect();
+        assert_eq!(v, [json!("offline"), json!("connected"), json!("live"), json!("unreadable")]);
     }
 }

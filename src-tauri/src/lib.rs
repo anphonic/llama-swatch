@@ -2,6 +2,7 @@ pub mod api;
 pub mod backoff;
 pub mod client;
 pub mod commands;
+pub mod compat;
 pub mod config;
 pub mod events;
 pub mod monitor;

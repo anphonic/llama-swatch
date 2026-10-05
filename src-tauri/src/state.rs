@@ -30,6 +30,8 @@ pub enum ModelState {
     /// `slow`: loading has lasted longer than `load_timeout_s`. A hint only.
     Loading { elapsed_s: u64, slow: bool },
     Idle { uptime_s: u64 },
+    /// Ready per `/running`, but busy or idle is unknown: live events are not being read.
+    Loaded,
     Busy {
         requests: usize,
         oldest_elapsed_s: u64,
@@ -61,11 +63,16 @@ pub enum ModelState {
 const FIRST_TOKEN_LONG_FACTOR: u64 = 10;
 
 /// Rules are evaluated top to bottom: Stalled (unloading past its timeout), Loading (never
-/// Stalled, only flagged `slow`), Unloading, Busy (may be Stalled), Idle, NotLoaded.
+/// Stalled, only flagged `slow`), Unloading, Loaded (ready while `sees_activity` is false),
+/// Busy (may be Stalled), Idle, NotLoaded.
+///
+/// `sees_activity`: live events are being read, so an empty `inflight` really means no
+/// requests. Without it a ready model is `Loaded`, never Idle, Busy or output-Stalled.
 pub fn derive_state(
     process_state: Option<&str>,
     inflight: &[InflightView],
     since_state_change: Duration,
+    sees_activity: bool,
     t: &Thresholds,
 ) -> ModelState {
     let in_state_s = since_state_change.as_secs();
@@ -75,6 +82,7 @@ pub fn derive_state(
         },
         Some("starting") => ModelState::Loading { elapsed_s: in_state_s, slow: in_state_s > t.load_timeout_s },
         Some("stopping") => ModelState::Unloading,
+        Some("ready") if !sees_activity => ModelState::Loaded,
         Some("ready") if !inflight.is_empty() => activity(inflight, since_state_change, t),
         Some("ready") => ModelState::Idle { uptime_s: in_state_s },
         _ => ModelState::NotLoaded,
@@ -310,27 +318,42 @@ mod tests {
             ("first token long timed from ready", Some("ready"), vec![view(1000, 100, 2), started(1000)], 500, busy(1000, 1, 1, 0, Some(2), false, false)),
         ];
         for (name, ps, inflight, since, expected) in cases {
-            assert_eq!(derive_state(ps, &inflight, secs(since), &t), expected, "case: {name}");
+            assert_eq!(derive_state(ps, &inflight, secs(since), true, &t), expected, "case: {name}");
         }
+    }
+
+    #[test]
+    fn ready_without_live_events_is_loaded_not_idle() {
+        let t = Thresholds::default();
+        assert_eq!(derive_state(Some("ready"), &[], secs(42), false, &t), Loaded);
+        assert_eq!(derive_state(Some("ready"), &[], secs(42), true, &t), Idle { uptime_s: 42 });
+        // Leftover in-flight data is not trusted either.
+        assert_eq!(derive_state(Some("ready"), &[view(60, 500, 31)], secs(300), false, &t), Loaded);
+        assert_eq!(derive_state(Some("ready"), &[started(5)], secs(300), false, &t), Loaded);
+        // Everything that comes from `/running` alone is unchanged.
+        assert_eq!(derive_state(None, &[], secs(5), false, &t), NotLoaded);
+        assert_eq!(derive_state(Some("starting"), &[], secs(121), false, &t), Loading { elapsed_s: 121, slow: true });
+        assert_eq!(derive_state(Some("stopping"), &[], secs(5), false, &t), Unloading);
+        assert_eq!(derive_state(Some("stopping"), &[], secs(31), false, &t), stalled("Unloading for 31 s (timeout 30 s)"));
     }
 
     #[test]
     fn custom_thresholds_are_respected() {
         let t = Thresholds { load_timeout_s: 10, stop_timeout_s: 5, first_byte_timeout_s: 3, stream_stall_timeout_s: 2 };
-        assert_eq!(derive_state(Some("starting"), &[], secs(11), &t), Loading { elapsed_s: 11, slow: true });
-        assert_eq!(derive_state(Some("stopping"), &[], secs(6), &t), stalled("Unloading for 6 s (timeout 5 s)"));
-        assert_eq!(derive_state(Some("ready"), &[started(4)], secs(60), &t), no_first_token(4));
-        assert_eq!(derive_state(Some("ready"), &[awaiting(4)], secs(60), &t), busy(4, 0, 0, 1, None, false, true));
-        assert_eq!(derive_state(Some("ready"), &[view(9, 5, 3)], secs(60), &t), stalled("Output stopped 3 s ago"));
+        assert_eq!(derive_state(Some("starting"), &[], secs(11), true, &t), Loading { elapsed_s: 11, slow: true });
+        assert_eq!(derive_state(Some("stopping"), &[], secs(6), true, &t), stalled("Unloading for 6 s (timeout 5 s)"));
+        assert_eq!(derive_state(Some("ready"), &[started(4)], secs(60), true, &t), no_first_token(4));
+        assert_eq!(derive_state(Some("ready"), &[awaiting(4)], secs(60), true, &t), busy(4, 0, 0, 1, None, false, true));
+        assert_eq!(derive_state(Some("ready"), &[view(9, 5, 3)], secs(60), true, &t), stalled("Output stopped 3 s ago"));
     }
 
     #[test]
     fn first_token_long_scales_with_first_byte_timeout() {
         // 10 x 20 s = 200 s, not the default 900 s.
         let t = Thresholds { first_byte_timeout_s: 20, ..Thresholds::default() };
-        let long = derive_state(Some("ready"), &[view(500, 100, 1), started(201)], secs(1000), &t);
+        let long = derive_state(Some("ready"), &[view(500, 100, 1), started(201)], secs(1000), true, &t);
         assert_eq!(long, busy(500, 1, 1, 0, Some(1), true, false));
-        let not_yet = derive_state(Some("ready"), &[view(500, 100, 1), started(200)], secs(1000), &t);
+        let not_yet = derive_state(Some("ready"), &[view(500, 100, 1), started(200)], secs(1000), true, &t);
         assert_eq!(not_yet, busy(500, 1, 1, 0, Some(1), false, false));
     }
 
@@ -348,6 +371,8 @@ mod tests {
         );
         let v = serde_json::to_value(Loading { elapsed_s: 121, slow: true }).unwrap();
         assert_eq!(v, serde_json::json!({"kind":"loading","elapsedS":121,"slow":true}));
+        let v = serde_json::to_value(Loaded).unwrap();
+        assert_eq!(v, serde_json::json!({"kind":"loaded"}));
         let v = serde_json::to_value(NotLoaded).unwrap();
         assert_eq!(v, serde_json::json!({"kind":"notLoaded"}));
         let v = serde_json::to_value(Thresholds::default()).unwrap();

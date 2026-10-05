@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 
 use crate::backoff::Backoff;
 use crate::client::{ClientError, LlamaSwapClient};
-use crate::events::{decode_event, StreamEvent};
+use crate::events::{decode_event, EventStream, StreamEvent};
 use crate::monitor::{MonitorState, Snapshot};
 use crate::poller::{poll_once, Feature, PollOutcome};
 use crate::sse::SseParser;
@@ -158,7 +158,8 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
         let delay = match connected {
             Ok(resp) => {
                 backoff.reset();
-                shared.with_state(|s| s.set_live_events(true));
+                // Connected, not live: live is earned by the first event that decodes.
+                shared.with_state(|s| s.events_connected());
                 shared.publish();
                 // Fresh parser per connection: a dropped stream's partial frame must not leak.
                 let mut parser = SseParser::new();
@@ -166,20 +167,30 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
                 while let Some(Ok(chunk)) = stream.next().await {
                     let mut changed = false;
                     for payload in parser.push(&chunk) {
-                        match decode_event(&payload) {
+                        // Only the outcome is kept: payloads can carry request headers, so
+                        // neither they nor serde's error text (which may quote them) leave here.
+                        let decoded = match decode_event(&payload) {
                             Ok(StreamEvent::Inflight(msg)) => {
                                 shared.with_state(|s| s.apply_inflight(msg, Instant::now()));
                                 changed = true;
+                                Some(true)
                             }
-                            Ok(StreamEvent::ModelStatus) => shared.wake.notify_one(),
-                            Ok(StreamEvent::Other) | Err(_) => {}
+                            Ok(StreamEvent::ModelStatus) => {
+                                shared.wake.notify_one();
+                                Some(true)
+                            }
+                            Ok(StreamEvent::Other) => None,
+                            Err(_) => Some(false),
+                        };
+                        if let Some(ok) = decoded {
+                            changed |= record_decode(&shared, ok);
                         }
                     }
                     if changed {
                         shared.publish();
                     }
                 }
-                shared.with_state(|s| s.set_live_events(false));
+                shared.with_state(|s| s.events_disconnected());
                 shared.publish();
                 backoff.next_delay()
             }
@@ -188,4 +199,19 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
         };
         tokio::time::sleep(delay).await;
     }
+}
+
+/// Records one decode outcome; returns whether the snapshot changed. Logs only a count, once,
+/// when the stream turns unreadable.
+fn record_decode(shared: &Shared, ok: bool) -> bool {
+    let mut st = shared.state.lock().expect("monitor state poisoned");
+    let was = st.event_stream();
+    let changed = st.record_decode(ok);
+    if was != EventStream::Unreadable && st.event_stream() == EventStream::Unreadable {
+        eprintln!(
+            "llama-swap event stream unreadable: {} events in a row could not be decoded",
+            st.consecutive_decode_failures()
+        );
+    }
+    changed
 }

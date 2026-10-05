@@ -7,7 +7,8 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::api::{ActivityEntry, Histogram, ModelEntry, RunningModel, StatsResponse};
-use crate::events::{InflightMsg, InflightTable};
+use crate::compat::version_note;
+use crate::events::{DecodeHealth, EventStream, InflightMsg, InflightTable};
 use crate::poller::{Feature, PollOutcome};
 use crate::state::{derive_state, ModelState, Thresholds};
 
@@ -55,10 +56,12 @@ pub struct Snapshot {
     pub connection: Connection,
     pub last_ok_ms: Option<i64>,
     pub version: Option<String>,
+    /// Set when `version` parses to a release outside the tested range (see `compat`).
+    pub version_note: Option<String>,
     pub models: Vec<ModelCard>,
     pub stats: Option<StatsSummary>,
     pub stats_available: bool,
-    pub live_events: bool,
+    pub event_stream: EventStream,
 }
 
 #[derive(Debug)]
@@ -73,7 +76,7 @@ pub struct MonitorState {
     stats_available: bool,
     activity: Vec<ActivityEntry>,
     inflight: InflightTable,
-    live_events: bool,
+    events: DecodeHealth,
     /// model id -> (llama-swap state, when we first saw it in that state)
     state_since: HashMap<String, (String, Instant)>,
 }
@@ -91,7 +94,7 @@ impl MonitorState {
             stats_available: true,
             activity: Vec::new(),
             inflight: InflightTable::default(),
-            live_events: false,
+            events: DecodeHealth::default(),
             state_since: HashMap::new(),
         }
     }
@@ -148,11 +151,36 @@ impl MonitorState {
         self.inflight.apply(msg, now);
     }
 
-    pub fn set_live_events(&mut self, live: bool) {
-        self.live_events = live;
-        if !live {
+    /// The event stream (re)connected: decode counts start over.
+    pub fn events_connected(&mut self) {
+        self.events.connect();
+    }
+
+    /// The event stream dropped or is unavailable. In-flight data can no longer be kept current.
+    pub fn events_disconnected(&mut self) {
+        self.events.disconnect();
+        self.inflight.clear();
+    }
+
+    /// Records one decode attempt of an event the monitor reads. Returns whether what the
+    /// snapshot shows may have changed (stream health or which ready models count as Idle).
+    /// Entering `Unreadable` drops the in-flight table: its removals may have been lost.
+    pub fn record_decode(&mut self, ok: bool) -> bool {
+        let before = (self.events.state(), self.events.sees_activity());
+        self.events.record(ok);
+        let after = (self.events.state(), self.events.sees_activity());
+        if after.0 == EventStream::Unreadable && before.0 != EventStream::Unreadable {
             self.inflight.clear();
         }
+        before != after
+    }
+
+    pub fn event_stream(&self) -> EventStream {
+        self.events.state()
+    }
+
+    pub fn consecutive_decode_failures(&self) -> u32 {
+        self.events.consecutive_failures()
     }
 
     pub fn snapshot(&self, now: Instant, wall_ms: i64, t: &Thresholds) -> Snapshot {
@@ -172,6 +200,7 @@ impl MonitorState {
             connection: self.connection.clone(),
             last_ok_ms: self.last_ok_ms,
             version: self.version.clone(),
+            version_note: self.version.as_deref().and_then(version_note),
             models,
             stats: self.stats.as_ref().map(|s| StatsSummary {
                 total_requests: s.total_requests,
@@ -182,7 +211,7 @@ impl MonitorState {
                 prompt: s.prompt_histogram.clone(),
             }),
             stats_available: self.stats_available,
-            live_events: self.live_events,
+            event_stream: self.events.state(),
         }
     }
 
@@ -194,7 +223,7 @@ impl MonitorState {
             .map(|(_, at)| now.saturating_duration_since(*at))
             .unwrap_or_default();
         let views = self.inflight.views_for(&id, now);
-        let state = derive_state(run.map(|r| r.state.as_str()), &views, since, t);
+        let state = derive_state(run.map(|r| r.state.as_str()), &views, since, self.events.sees_activity(), t);
 
         let mut history: Vec<&ActivityEntry> = self.activity.iter().filter(|a| a.model == id).collect();
         history.sort_by_key(|a| a.id);
@@ -267,6 +296,12 @@ mod tests {
             activity: Feature::Failed,
         }
     }
+    /// A monitor whose event stream is open, so ready models can show as Idle.
+    fn watching(host: &str) -> MonitorState {
+        let mut m = MonitorState::new(host);
+        m.events_connected();
+        m
+    }
     fn card<'a>(s: &'a Snapshot, id: &str) -> &'a ModelCard {
         s.models.iter().find(|m| m.id == id).unwrap_or_else(|| panic!("no card {id}"))
     }
@@ -274,7 +309,7 @@ mod tests {
     #[test]
     fn cards_follow_configured_order_and_include_unlisted_running() {
         let t0 = Instant::now();
-        let mut m = MonitorState::new("http://box:8080");
+        let mut m = watching("http://box:8080");
         m.apply_poll(PollOutcome::Ok(data(vec![running("c", "ready", 0)], Some(vec![model("a"), model("b")]))), t0, WALL);
         let s = m.snapshot(t0, WALL, &Thresholds::default());
         let ids: Vec<&str> = s.models.iter().map(|c| c.id.as_str()).collect();
@@ -289,7 +324,7 @@ mod tests {
     #[test]
     fn alias_selector_and_peer_records_do_not_become_cards() {
         let t0 = Instant::now();
-        let mut m = MonitorState::new("h");
+        let mut m = watching("h");
         let list: crate::api::ModelsResponse =
             serde_json::from_str(include_str!("../tests/fixtures/models_mixed.json")).unwrap();
         m.apply_poll(PollOutcome::Ok(data(vec![running("gemma-12b", "ready", 0)], Some(list.data))), t0, WALL);
@@ -302,7 +337,7 @@ mod tests {
     #[test]
     fn uptime_measured_from_observed_transition() {
         let t0 = Instant::now();
-        let mut m = MonitorState::new("h");
+        let mut m = watching("h");
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "starting", 0)], Some(vec![model("a")]))), t0, WALL);
         let s = m.snapshot(t0 + secs(4), WALL, &Thresholds::default());
         assert_eq!(card(&s, "a").state, ModelState::Loading { elapsed_s: 4, slow: false });
@@ -332,7 +367,7 @@ mod tests {
 
     fn idle_with_request(ready_for: u64, last_request_ms: i64) -> Snapshot {
         let t0 = Instant::now();
-        let mut m = MonitorState::new("h");
+        let mut m = watching("h");
         let mut d = data(vec![running("a", "ready", 300)], Some(vec![model("a")]));
         d.activity = Feature::Available(vec![activity(1, "a", last_request_ms, 40.0)]);
         m.apply_poll(PollOutcome::Ok(d), t0, WALL);
@@ -361,7 +396,7 @@ mod tests {
     #[test]
     fn ttl_zero_means_no_ttl() {
         let t0 = Instant::now();
-        let mut m = MonitorState::new("h");
+        let mut m = watching("h");
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 0)], None)), t0, WALL);
         let s = m.snapshot(t0, WALL, &Thresholds::default());
         assert_eq!(card(&s, "a").ttl_s, None);
@@ -398,21 +433,82 @@ mod tests {
         assert!(!s.stats_available);
     }
 
-    #[test]
-    fn dropping_live_events_clears_inflight() {
+    fn busy_on_live_stream() -> (MonitorState, Instant) {
         let t0 = Instant::now();
-        let mut m = MonitorState::new("h");
+        let mut m = watching("h");
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 0)], None)), t0, WALL);
-        m.set_live_events(true);
         let req = InflightEntry { id: "1".into(), model: "a".into(), resp_bytes: 10, ..Default::default() };
         m.apply_inflight(InflightMsg { operation: "upsert".into(), request: Some(req), ..Default::default() }, t0);
+        assert!(m.record_decode(true), "connected -> live is a change");
         let s = m.snapshot(t0, WALL, &Thresholds::default());
         assert!(matches!(card(&s, "a").state, ModelState::Busy { requests: 1, .. }));
-        assert!(s.live_events);
-        m.set_live_events(false);
+        assert_eq!(s.event_stream, EventStream::Live);
+        (m, t0)
+    }
+
+    #[test]
+    fn dropping_live_events_clears_inflight_and_shows_loaded() {
+        let (mut m, t0) = busy_on_live_stream();
+        m.events_disconnected();
         let s = m.snapshot(t0, WALL, &Thresholds::default());
-        assert!(matches!(card(&s, "a").state, ModelState::Idle { .. }));
-        assert!(!s.live_events);
+        assert_eq!(card(&s, "a").state, ModelState::Loaded, "no live data: never Idle");
+        assert_eq!(s.event_stream, EventStream::Offline);
+        m.events_connected();
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert!(matches!(card(&s, "a").state, ModelState::Idle { .. }), "inflight was cleared");
+        assert_eq!(s.event_stream, EventStream::Connected);
+    }
+
+    #[test]
+    fn unreadable_events_show_loaded_and_drop_stale_inflight() {
+        let (mut m, t0) = busy_on_live_stream();
+        assert!(!m.record_decode(false), "one stray bad frame changes nothing");
+        assert!(!m.record_decode(false));
+        assert!(matches!(card(&m.snapshot(t0, WALL, &Thresholds::default()), "a").state, ModelState::Busy { .. }));
+        assert!(m.record_decode(false), "third failure in a row -> unreadable");
+        assert_eq!(m.consecutive_decode_failures(), 3);
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert_eq!(s.event_stream, EventStream::Unreadable);
+        assert_eq!(card(&s, "a").state, ModelState::Loaded);
+        assert!(m.record_decode(true), "readable again");
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert_eq!(s.event_stream, EventStream::Live);
+        assert!(matches!(card(&s, "a").state, ModelState::Idle { .. }), "stale request was dropped");
+    }
+
+    #[test]
+    fn idle_needs_an_open_event_stream() {
+        let t0 = Instant::now();
+        let mut m = MonitorState::new("h");
+        m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 300)], None)), t0, WALL);
+        assert_eq!(card(&m.snapshot(t0, WALL, &Thresholds::default()), "a").state, ModelState::Loaded);
+        m.events_connected();
+        assert!(matches!(card(&m.snapshot(t0, WALL, &Thresholds::default()), "a").state, ModelState::Idle { .. }));
+        assert!(m.record_decode(false), "a failure before any success makes idle unbelievable");
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert_eq!(s.event_stream, EventStream::Connected);
+        assert_eq!(card(&s, "a").state, ModelState::Loaded);
+        assert_eq!(card(&s, "a").ttl_remaining_s, None, "the unload estimate assumes idle");
+    }
+
+    #[test]
+    fn version_note_follows_reported_version() {
+        let t0 = Instant::now();
+        let mut m = MonitorState::new("h");
+        let version = |v: &str| {
+            let mut d = data(vec![], None);
+            d.version = Some(Feature::Available(crate::api::VersionInfo { version: v.into(), ..Default::default() }));
+            PollOutcome::Ok(d)
+        };
+        m.apply_poll(version("v270"), t0, WALL);
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert_eq!(s.version_note.as_deref(), Some("Tested with llama-swap v249–v262; this server reports v270"));
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["versionNote"], "Tested with llama-swap v249–v262; this server reports v270");
+        m.apply_poll(version("v262"), t0, WALL);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).version_note, None);
+        m.apply_poll(version("garbage"), t0, WALL);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).version_note, None);
     }
 
     #[test]
@@ -421,9 +517,12 @@ mod tests {
         let mut m = MonitorState::new("http://box:8080");
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 300)], None)), t0, WALL);
         let v = serde_json::to_value(m.snapshot(t0, WALL, &Thresholds::default())).unwrap();
-        for key in ["host", "connection", "lastOkMs", "version", "models", "stats", "statsAvailable", "liveEvents"] {
+        for key in ["host", "connection", "lastOkMs", "version", "versionNote", "models", "stats", "statsAvailable", "eventStream"] {
             assert!(v.get(key).is_some(), "missing {key}: {v}");
         }
+        assert_eq!(v["eventStream"], "offline");
+        assert_eq!(v["versionNote"], serde_json::Value::Null);
+        assert_eq!(v["models"][0]["state"], serde_json::json!({"kind":"loaded"}));
         assert_eq!(v["connection"], serde_json::json!({"kind":"connected","latencyMs":12}));
         let c = &v["models"][0];
         for key in ["id", "name", "description", "state", "ttlS", "ttlRemainingS", "tokSHistory", "lastRequestAtMs"] {
