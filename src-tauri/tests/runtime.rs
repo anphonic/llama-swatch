@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
+use llama_swap_monitor_lib::events::EventStream;
 use llama_swap_monitor_lib::monitor::{Connection, Snapshot};
 use llama_swap_monitor_lib::runtime::{start, MonitorConfig, SnapshotSink};
 use llama_swap_monitor_lib::state::{ModelState, Thresholds};
@@ -53,7 +54,8 @@ async fn healthy_server_produces_connected_snapshot() {
     assert_eq!(s.version.as_deref(), Some("v188"));
     assert_eq!(s.models.len(), 3);
     assert!(s.stats.is_some());
-    assert!(!s.live_events, "no /api/events route mounted");
+    assert_eq!(s.event_stream, EventStream::Offline, "no /api/events route mounted");
+    assert_eq!(s.version_note.as_deref(), Some("Tested with llama-swap v249–v262; this server reports v188"));
 }
 
 #[tokio::test]
@@ -95,11 +97,11 @@ async fn dropped_event_stream_clears_busy() {
     let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
 
     wait_for(&mut rx, "busy from live event", |s| {
-        s.live_events && matches!(state_of(s, "qwen3-30b"), Some(ModelState::Busy { requests: 1, .. }))
+        s.event_stream == EventStream::Live && matches!(state_of(s, "qwen3-30b"), Some(ModelState::Busy { requests: 1, .. }))
     })
     .await;
-    wait_for(&mut rx, "idle after stream drop", |s| {
-        !s.live_events && matches!(state_of(s, "qwen3-30b"), Some(ModelState::Idle { .. }))
+    wait_for(&mut rx, "loaded, not idle, after stream drop", |s| {
+        s.event_stream == EventStream::Offline && state_of(s, "qwen3-30b") == Some(&ModelState::Loaded)
     })
     .await;
 
@@ -121,6 +123,61 @@ async fn dropped_event_stream_clears_busy() {
     })
     .await;
     assert!(reconnected.is_ok(), "event stream did not reconnect");
+}
+
+#[tokio::test]
+async fn undecodable_events_are_reported_as_unreadable() {
+    let server = MockServer::start().await;
+    // A newer llama-swap whose inflight payload no longer parses, three frames in a row.
+    let bad = "event:message\ndata:{\"type\":\"inflight\",\"data\":\"{not json\"}\n\n".repeat(3);
+    Mock::given(path("/api/events"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(bad.into_bytes(), "text/event-stream")
+                .set_delay(Duration::from_millis(500)),
+        )
+        .mount(&server)
+        .await;
+    mount_healthy(&server).await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    let s = wait_for(&mut rx, "unreadable", |s| s.event_stream == EventStream::Unreadable).await;
+    assert_eq!(state_of(&s, "qwen3-30b"), Some(&ModelState::Loaded));
+}
+
+#[tokio::test]
+async fn upserts_that_fail_are_not_masked_by_removes_and_model_status() {
+    let server = MockServer::start().await;
+    // Only the upsert entry shape changed (elapsed_ms became a string); removes and
+    // modelStatus still decode. They must not keep the stream Live.
+    let frame = |kind: &str, data: serde_json::Value| {
+        let env = serde_json::json!({ "type": kind, "data": data.to_string() });
+        format!("event:message\ndata:{env}\n\n")
+    };
+    let bad_upsert = frame(
+        "inflight",
+        serde_json::json!({"operation":"upsert","request":{"id":"1","model":"qwen3-30b","elapsed_ms":"900","resp_bytes":0}}),
+    );
+    let remove = frame("inflight", serde_json::json!({"operation":"remove","id":"1"}));
+    let model_status = frame("modelStatus", serde_json::json!({}));
+    let body = format!("{bad_upsert}{remove}{model_status}").repeat(3);
+    Mock::given(path("/api/events"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(body.into_bytes(), "text/event-stream")
+                .set_delay(Duration::from_millis(500)),
+        )
+        .mount(&server)
+        .await;
+    mount_healthy(&server).await;
+    let (tx, mut rx) = unbounded_channel();
+    let _handle = start(config(server.uri()), Arc::new(ChanSink(tx))).unwrap();
+    let s = wait_for(&mut rx, "unreadable, never live", |s| {
+        assert_ne!(s.event_stream, EventStream::Live, "removes and modelStatus must not make the stream live");
+        s.event_stream == EventStream::Unreadable
+    })
+    .await;
+    assert_eq!(state_of(&s, "qwen3-30b"), Some(&ModelState::Loaded));
 }
 
 #[tokio::test]

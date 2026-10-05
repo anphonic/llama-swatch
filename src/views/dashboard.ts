@@ -1,7 +1,7 @@
 import { h, svg } from "../dom";
 import { formatAgo, formatCount, formatDuration } from "../format";
 import { countLoaded, isLoaded } from "../models";
-import type { Connection, ModelCard, ModelState, Settings, Snapshot } from "../types";
+import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadModel, setAlwaysOnTopSetting, unloadModel } from "../api";
 import { renderHistogram } from "./components/histogram";
@@ -21,10 +21,29 @@ const PILL: Record<ModelState["kind"], string> = {
   notLoaded: "Not loaded",
   loading: "Loading",
   idle: "Idle",
+  loaded: "Loaded",
   busy: "Busy",
   stalled: "Stalled",
   unloading: "Unloading",
 };
+
+/** Header badge text and tooltip per event-stream health. */
+const EVENTS_BADGE: Record<EventStream, { text: string; title: string }> = {
+  live: { text: "live", title: "Receiving live request events" },
+  connected: {
+    text: "waiting for events",
+    title: "Connected, waiting for events: the event stream is open but no request event has been read from it yet. llama-swap may send nothing while idle.",
+  },
+  unreadable: {
+    text: "events unreadable",
+    title: "llama-swap sends live events this version of the monitor can't read; Busy/Stalled can't be shown.",
+  },
+  offline: { text: "polling", title: "Live events unavailable: Busy and output-stall detection are off" },
+};
+
+/** `connected` after a frame failed to decode: something arrived, so "nothing read yet" would be wrong. */
+const CONNECTED_READ_FAILED_TITLE =
+  "Connected: events arrived but couldn't be read yet, so Busy/Stalled can't be shown until one is read.";
 
 const CONN_TEXT: Record<Connection["kind"], string> = {
   connecting: "Connecting…",
@@ -102,6 +121,12 @@ function describe(card: ModelCard, settings: Settings, ageS: number): Detail {
 Taking longer than the slow-load warning (${slowS} s). llama-swap's own health-check timeout decides whether the load fails.`,
     };
   }
+  if (s.kind === "loaded") {
+    return {
+      text: describeText(card),
+      title: "Loaded and ready. Busy or idle is unknown because live request events are not being received.",
+    };
+  }
   return { text: describeText(card) };
 }
 
@@ -115,6 +140,8 @@ function describeText(card: ModelCard): string {
       return `Loading ${formatDuration(s.elapsedS)}`; // see describe
     case "idle":
       return `Up ${formatDuration(s.uptimeS)}${tok !== undefined ? ` · last ${tok.toFixed(1)} tok/s` : ""}`;
+    case "loaded":
+      return "no live data";
     case "busy":
       return ""; // see describeBusy
     case "stalled":
@@ -188,7 +215,7 @@ class CardView {
       const fromKeyboard = keyboardMenu || (e.clientX === 0 && e.clientY === 0);
       keyboardMenu = false;
       const kind = this.card?.state.kind;
-      if (this.card && (kind === "idle" || kind === "busy" || kind === "stalled" || kind === "loading")) {
+      if (this.card && (kind === "idle" || kind === "loaded" || kind === "busy" || kind === "stalled" || kind === "loading")) {
         let { clientX: x, clientY: y } = e;
         if (fromKeyboard) {
           const r = this.el.getBoundingClientRect();
@@ -239,7 +266,7 @@ class CardView {
       lastSeenMs !== null ? `Last seen ${formatAgo(lastSeenMs)}` : ttlOn ? ttlLabel(card.ttlRemainingS as number) : "";
     this.ttl.update(ttlOn ? (card.ttlRemainingS as number) : null, card.ttlS ?? 0);
     this.spark.replaceChildren(
-      ...((s.kind === "busy" || s.kind === "idle") && card.tokSHistory.length >= 2 ? [renderSparkline(card.tokSHistory)] : []),
+      ...((s.kind === "busy" || s.kind === "idle" || s.kind === "loaded") && card.tokSHistory.length >= 2 ? [renderSparkline(card.tokSHistory)] : []),
     );
   }
 }
@@ -287,6 +314,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const live = h("span", { class: "badge" });
   const host = h("span", { class: "host" }, settings.baseUrl);
   const meta = h("span", { class: "meta" });
+  const versionNote = h("span", { class: "version-note" });
+  versionNote.hidden = true;
   const gear = h("button", { type: "button", class: "icon-button", "aria-label": "Settings", title: "Settings" }, "⚙");
   gear.addEventListener("click", onOpenSettings);
   let pinned = settings.alwaysOnTop;
@@ -315,7 +344,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     "header",
     { class: "header" },
     dot,
-    h("div", { class: "header-main" }, h("div", { class: "header-line" }, statusText, live), h("div", { class: "header-line" }, host, meta)),
+    h("div", { class: "header-main" }, h("div", { class: "header-line" }, statusText, live), h("div", { class: "header-line" }, host, meta, versionNote)),
     switcher,
     pin,
     gear,
@@ -482,11 +511,15 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     meta.textContent = [s.version ? `llama-swap ${s.version}` : null, c.kind === "connected" ? `${c.latencyMs} ms` : null]
       .filter(Boolean)
       .join(" · ");
-    live.textContent = s.liveEvents ? "live" : "polling";
-    live.title = s.liveEvents
-      ? "Receiving live request events"
-      : "Live events unavailable: Busy and output-stall detection are off";
-    live.classList.toggle("badge-live", s.liveEvents);
+    versionNote.textContent = s.versionNote ?? "";
+    versionNote.title = s.versionNote ?? "";
+    versionNote.hidden = !s.versionNote;
+    // `??` guards runtime data: a backend state this build doesn't know must not break rendering.
+    const badge = EVENTS_BADGE[s.eventStream] ?? EVENTS_BADGE.offline;
+    live.textContent = badge.text;
+    live.title = s.eventStream === "connected" && s.eventReadFailed ? CONNECTED_READ_FAILED_TITLE : badge.title;
+    live.classList.toggle("badge-live", s.eventStream === "live");
+    live.classList.toggle("badge-warn", s.eventStream === "unreadable");
 
     const seen = s.lastOkMs ? ` · last seen ${formatAgo(s.lastOkMs)}` : "";
     if (c.kind === "unauthorized") showBanner("llama-swap rejected the API key.", true);

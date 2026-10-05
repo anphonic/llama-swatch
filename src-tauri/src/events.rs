@@ -6,16 +6,18 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::api::null_default;
 
+/// The outer frame. `data` is kept as raw JSON so that an event type this monitor doesn't read
+/// is recognised (and ignored) even when its `data` isn't the usual string.
 #[derive(Debug, Deserialize)]
 struct Envelope {
     #[serde(rename = "type")]
     kind: String,
     #[serde(default)]
-    data: String,
+    data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -59,11 +61,13 @@ pub enum StreamEvent {
     Other,
 }
 
+/// Errors only when the frame's type can't be read, or an `inflight` payload doesn't decode.
+/// Any other type is identified from `type` alone, whatever its `data` holds.
 pub fn decode_event(payload: &str) -> Result<StreamEvent, serde_json::Error> {
     let env: Envelope = serde_json::from_str(payload)?;
     Ok(match env.kind.as_str() {
         "modelStatus" => StreamEvent::ModelStatus,
-        "inflight" => StreamEvent::Inflight(serde_json::from_str(&env.data)?),
+        "inflight" => StreamEvent::Inflight(serde_json::from_str(&String::deserialize(env.data)?)?),
         _ => StreamEvent::Other,
     })
 }
@@ -152,6 +156,117 @@ impl InflightTable {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+/// What one frame says about whether this monitor can read the in-flight data the cards need:
+/// `Some(true)` proves it can, `Some(false)` is a decode failure, `None` proves nothing.
+///
+/// - Success: an inflight `snapshot` whose entries all name a model (an empty snapshot counts),
+///   or an `upsert` whose entry names a model. Those are the frames whose entries had to decode
+///   into something a card can match.
+/// - Failure: a frame whose type can't be read (not JSON, no string `type`), an inflight frame
+///   whose payload doesn't decode, or a snapshot/upsert entry with an empty `model`. Entries
+///   decode leniently (`#[serde(default)]`), so an empty model means the shape drifted, e.g. the
+///   field was renamed.
+/// - Neutral: `remove` (just an id), an `upsert` with no entry, `modelStatus`, and any other
+///   event type, even when its `data` doesn't parse (see [`decode_event`]).
+///
+/// If neutral frames counted as success, a llama-swap that changed only the entry shape would keep
+/// the stream `Live` on removes alone, with an empty table showing Idle while models serve. If
+/// they counted as failure, an idle server sending a new event type would turn `Unreadable`.
+pub fn health_signal(r: &Result<StreamEvent, serde_json::Error>) -> Option<bool> {
+    let named = |e: &InflightEntry| !e.model.is_empty();
+    match r {
+        Ok(StreamEvent::Inflight(m)) => match (m.operation.as_str(), &m.request) {
+            ("snapshot", _) => Some(m.requests.iter().all(named)),
+            ("upsert", Some(e)) => Some(named(e)),
+            _ => None,
+        },
+        Ok(StreamEvent::ModelStatus | StreamEvent::Other) => None,
+        Err(_) => Some(false),
+    }
+}
+
+/// Health of the `/api/events` stream, as shown in the header badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventStream {
+    /// Not connected, or the server has no `/api/events`.
+    Offline,
+    /// Stream open, no in-flight snapshot or upsert decoded yet on this connection.
+    Connected,
+    /// At least one in-flight snapshot or upsert decoded on this connection, and fewer than
+    /// [`UNREADABLE_AFTER`] decode failures since the last success.
+    Live,
+    /// [`UNREADABLE_AFTER`] or more events in a row on this connection failed to decode.
+    Unreadable,
+}
+
+/// Consecutive decode failures that make the stream `Unreadable`. One or two stray bad frames
+/// change nothing; a third in a row means this llama-swap sends events we cannot read.
+pub const UNREADABLE_AFTER: u32 = 3;
+
+/// Per-connection decode bookkeeping behind [`EventStream`]. Holds only counts: payload and
+/// error text never reach it (payloads can carry request headers).
+///
+/// Fed by [`health_signal`]: a success is an inflight `snapshot` or `upsert` whose entries all
+/// name a model; a failure is a frame that did not decode or an entry with an empty `model`.
+/// Everything else (`remove`, `modelStatus`, logs, metrics) is neutral: it neither resets nor adds to the failure streak, because it
+/// proves nothing about the entry data the cards need.
+#[derive(Debug, Default)]
+pub struct DecodeHealth {
+    connected: bool,
+    decoded: bool,
+    consecutive_failures: u32,
+}
+
+impl DecodeHealth {
+    /// A new connection: all counts start over.
+    pub fn connect(&mut self) {
+        *self = Self { connected: true, ..Self::default() };
+    }
+
+    pub fn disconnect(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Records one decode attempt of an event the monitor reads.
+    pub fn record(&mut self, ok: bool) {
+        if ok {
+            self.decoded = true;
+            self.consecutive_failures = 0;
+        } else {
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        }
+    }
+
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+
+    pub fn state(&self) -> EventStream {
+        if !self.connected {
+            EventStream::Offline
+        } else if self.consecutive_failures >= UNREADABLE_AFTER {
+            EventStream::Unreadable
+        } else if self.decoded {
+            EventStream::Live
+        } else {
+            EventStream::Connected
+        }
+    }
+
+    /// Whether "no requests in flight" can be believed, i.e. a ready model may show as Idle.
+    /// `Connected` counts while nothing has failed to decode: llama-swap may send nothing while
+    /// idle, and the first request's events either decode (then `Live`) or fail (then this turns
+    /// false at once, before `Unreadable`). Offline and Unreadable never do.
+    pub fn sees_activity(&self) -> bool {
+        match self.state() {
+            EventStream::Live => true,
+            EventStream::Connected => self.consecutive_failures == 0,
+            EventStream::Offline | EventStream::Unreadable => false,
+        }
     }
 }
 
@@ -338,5 +453,200 @@ mod tests {
         assert_eq!(t.views_for("nope", now).len(), 0);
         t.clear();
         assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn decode_health_states() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        assert_eq!(h.state(), Offline);
+        assert!(!h.sees_activity());
+        h.connect();
+        assert_eq!(h.state(), Connected);
+        assert!(h.sees_activity(), "connected, nothing failed: idle is believable");
+        h.record(true);
+        assert_eq!(h.state(), Live);
+        assert!(h.sees_activity());
+        h.disconnect();
+        assert_eq!(h.state(), Offline);
+        assert!(!h.sees_activity());
+    }
+
+    #[test]
+    fn decode_health_tolerates_stray_bad_frames() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        h.connect();
+        h.record(true);
+        h.record(false);
+        h.record(false);
+        assert_eq!(h.state(), Live, "two stray failures after a success");
+        assert!(h.sees_activity());
+        h.record(true);
+        h.record(false);
+        h.record(false);
+        assert_eq!(h.state(), Live, "a success resets the run of failures");
+        h.record(false);
+        assert_eq!(h.state(), Unreadable);
+        assert_eq!(h.consecutive_failures(), UNREADABLE_AFTER);
+        assert!(!h.sees_activity());
+        h.record(true);
+        assert_eq!(h.state(), Live, "readable again after a success");
+    }
+
+    #[test]
+    fn decode_health_failures_before_any_success() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        h.connect();
+        h.record(false);
+        assert_eq!(h.state(), Connected);
+        assert!(!h.sees_activity(), "a failure before any success: idle is not believable");
+        h.record(false);
+        h.record(false);
+        assert_eq!(h.state(), Unreadable);
+    }
+
+    #[test]
+    fn decode_health_resets_on_reconnect() {
+        use EventStream::*;
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for _ in 0..5 {
+            h.record(false);
+        }
+        assert_eq!(h.state(), Unreadable);
+        h.connect();
+        assert_eq!(h.state(), Connected);
+        assert_eq!(h.consecutive_failures(), 0);
+        assert!(h.sees_activity());
+        h.record(true);
+        h.disconnect();
+        h.connect();
+        assert_eq!(h.state(), Connected, "a success on an earlier connection does not carry over");
+    }
+
+    #[test]
+    fn event_stream_serializes_camel_case() {
+        let v: Vec<_> = [EventStream::Offline, EventStream::Connected, EventStream::Live, EventStream::Unreadable]
+            .iter()
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect();
+        assert_eq!(v, [json!("offline"), json!("connected"), json!("live"), json!("unreadable")]);
+    }
+
+    /// Feeds raw frames through `decode_event` and `health_signal` the way the runtime does.
+    fn feed(h: &mut DecodeHealth, payloads: &[String]) {
+        for p in payloads {
+            if let Some(ok) = health_signal(&decode_event(p)) {
+                h.record(ok);
+            }
+        }
+    }
+
+    #[test]
+    fn only_snapshot_and_upsert_prove_the_stream_readable() {
+        let good_upsert = envelope("inflight", json!({"operation":"upsert","request":wire_entry(None)}));
+        let snapshot = envelope("inflight", json!({"operation":"snapshot","requests":[wire_entry(None)]}));
+        let empty_snapshot = envelope("inflight", json!({"operation":"snapshot","requests":null}));
+        let remove = envelope("inflight", json!({"operation":"remove","id":"7"}));
+        let upsert_without_entry = envelope("inflight", json!({"operation":"upsert"}));
+        let model_status = envelope("modelStatus", json!({}));
+        let log = envelope("logData", json!("line"));
+        assert_eq!(health_signal(&decode_event(&good_upsert)), Some(true));
+        assert_eq!(health_signal(&decode_event(&snapshot)), Some(true));
+        assert_eq!(health_signal(&decode_event(&empty_snapshot)), Some(true));
+        assert_eq!(health_signal(&decode_event(&remove)), None);
+        assert_eq!(health_signal(&decode_event(&upsert_without_entry)), None);
+        assert_eq!(health_signal(&decode_event(&model_status)), None);
+        assert_eq!(health_signal(&decode_event(&log)), None);
+        assert_eq!(health_signal(&decode_event("{not json")), Some(false));
+    }
+
+    #[test]
+    fn broken_upserts_are_not_masked_by_removes_and_model_status() {
+        use EventStream::*;
+        // A newer llama-swap where only the upsert entry shape changed.
+        let mut bad_entry = wire_entry(None);
+        bad_entry["elapsed_ms"] = json!("3000");
+        let bad_upsert = envelope("inflight", json!({"operation":"upsert","request":bad_entry}));
+        let remove = envelope("inflight", json!({"operation":"remove","id":"7"}));
+        let model_status = envelope("modelStatus", json!({}));
+        assert!(decode_event(&bad_upsert).is_err(), "test frame must fail to decode");
+
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for _ in 0..5 {
+            feed(&mut h, std::slice::from_ref(&bad_upsert));
+            assert_ne!(h.state(), Live);
+            assert!(!h.sees_activity(), "a model must not show Idle while upserts fail");
+            feed(&mut h, &[remove.clone(), model_status.clone()]);
+            assert_ne!(h.state(), Live);
+            assert!(!h.sees_activity());
+        }
+        assert_eq!(h.state(), Unreadable);
+
+        let good_upsert = envelope("inflight", json!({"operation":"upsert","request":wire_entry(None)}));
+        feed(&mut h, &[good_upsert]);
+        assert_eq!(h.state(), Live);
+        assert!(h.sees_activity());
+    }
+
+    #[test]
+    fn entries_without_a_model_are_failures() {
+        use EventStream::*;
+        // A llama-swap that renamed `model`: the entry still decodes (serde defaults) but
+        // matches no card, so it must not make the stream Live.
+        let mut renamed = wire_entry(None);
+        let model = renamed.as_object_mut().unwrap().remove("model").unwrap();
+        renamed["model_id"] = model;
+        let upsert = envelope("inflight", json!({"operation":"upsert","request":renamed}));
+        assert!(decode_event(&upsert).is_ok(), "test frame must still decode");
+        assert_eq!(health_signal(&decode_event(&upsert)), Some(false));
+
+        let snapshot = envelope("inflight", json!({"operation":"snapshot","requests":[wire_entry(None), renamed]}));
+        assert_eq!(health_signal(&decode_event(&snapshot)), Some(false), "every entry needs a model");
+
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for _ in 0..5 {
+            feed(&mut h, std::slice::from_ref(&upsert));
+            assert_ne!(h.state(), Live);
+            assert!(!h.sees_activity());
+        }
+        assert_eq!(h.state(), Unreadable);
+    }
+
+    #[test]
+    fn unknown_event_types_with_odd_data_stay_neutral() {
+        let odd = [
+            json!({"type":"newThing","data":{"a":1}}).to_string(),
+            json!({"type":"newThing","data":42}).to_string(),
+            json!({"type":"logData","data":null}).to_string(),
+            json!({"type":"metrics","data":[1,2],"extra":true}).to_string(),
+            json!({"type":"modelStatus","data":{"model":"a"}}).to_string(),
+        ];
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for p in &odd {
+            assert_eq!(health_signal(&decode_event(p)), None, "{p}");
+        }
+        feed(&mut h, &odd);
+        assert_eq!(h.state(), EventStream::Connected);
+        assert!(h.sees_activity(), "an idle server sending new event types keeps models Idle");
+    }
+
+    #[test]
+    fn frames_without_a_readable_type_are_failures() {
+        for p in [
+            "not json".to_string(),
+            "{not json".to_string(),
+            json!({"data":"x"}).to_string(),
+            json!({"type":7,"data":"x"}).to_string(),
+            json!(["inflight"]).to_string(),
+            json!({"type":"inflight","data":{"operation":"upsert"}}).to_string(),
+        ] {
+            assert_eq!(health_signal(&decode_event(&p)), Some(false), "{p}");
+        }
     }
 }
