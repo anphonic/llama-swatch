@@ -34,6 +34,7 @@ export function createRing(): Ring {
           break;
         case "notLoaded":
         case "idle":
+        case "loaded":
         case "unloading":
           break;
       }

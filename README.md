@@ -7,6 +7,9 @@ and a summary of throughput.
 Works with llama-swap running anywhere you can reach over HTTP: the same machine, a box
 on your LAN, or behind a reverse proxy.
 
+Tested with llama-swap v249 to v262. The header shows an amber note when the server reports a
+release outside that range.
+
 ## What the states mean
 
 | State | Looks like | Meaning |
@@ -14,6 +17,7 @@ on your LAN, or behind a reverse proxy.
 | Not loaded | dimmed grey ring | Configured in llama-swap, not running |
 | Loading | amber pulsing ring, seconds in the middle | llama-swap is starting the model. Past the slow-load warning (default 120 s) the card adds a `slow load` hint; llama-swap's own health-check timeout decides whether the load fails |
 | Idle | solid green ring, TTL bar | Loaded, no requests in flight |
+| Loaded | solid grey ring, `no live data` | Ready, but the monitor isn't reading live events, so it can't tell busy from idle |
 | Busy | spinning blue arc, request count | At least one request is in flight and remains within its applicable timeout |
 | Stalled | red ring with `!` | Unloading took too long, or the model stopped producing output |
 | Unloading | fading grey ring | llama-swap is stopping the model |
@@ -41,7 +45,16 @@ that waits for its first token more than 10 times that timeout while others stre
 `waiting long` hint.
 
 Busy and output-stall detection need llama-swap's live event stream (`/api/events`).
-The header badge shows `live` when it's connected and `polling` when it isn't.
+The header badge shows its state:
+
+- `live`: events are arriving and being read.
+- `waiting for events`: the stream is open but nothing has been read from it yet (llama-swap
+  may send nothing while idle). Ready models still show Idle unless an event fails to decode.
+- `events unreadable` (amber): three events in a row could not be decoded, so this llama-swap
+  sends events in a shape this version of the monitor can't read.
+- `polling`: no event stream.
+
+Without readable events a ready model shows as Loaded rather than Idle.
 
 ## Window
 

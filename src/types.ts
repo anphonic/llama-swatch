@@ -4,6 +4,8 @@ export type ModelState =
   | { kind: "notLoaded" }
   | { kind: "loading"; elapsedS: number; slow: boolean }
   | { kind: "idle"; uptimeS: number }
+  /** Ready per /running, but busy or idle is unknown: live events are not being read. */
+  | { kind: "loaded" }
   | {
       kind: "busy";
       requests: number;
@@ -30,6 +32,9 @@ export type Connection =
   | { kind: "unauthorized" }
   | { kind: "unreachable"; message: string }
   | { kind: "error"; message: string };
+
+/** Health of llama-swap's `/api/events` stream (events.rs `EventStream`). */
+export type EventStream = "offline" | "connected" | "live" | "unreadable";
 
 export interface ModelCard {
   id: string;
@@ -66,10 +71,12 @@ export interface Snapshot {
   connection: Connection;
   lastOkMs: number | null;
   version: string | null;
+  /** Set when the reported version is outside the range this monitor was tested with. */
+  versionNote: string | null;
   models: ModelCard[];
   stats: StatsSummary | null;
   statsAvailable: boolean;
-  liveEvents: boolean;
+  eventStream: EventStream;
 }
 
 export interface Thresholds {
