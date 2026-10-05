@@ -1,4 +1,6 @@
-# Llama Swatch
+<h1 align="center">
+  <img src="docs/images/banner.png" alt="Llama Swatch: a desktop monitor for llama-swap" width="800">
+</h1>
 
 A desktop monitor for [llama-swap](https://github.com/mostlygeek/llama-swap).
 It shows what your llama-swap instance is doing: whether it's reachable, which models
@@ -9,6 +11,9 @@ on your LAN, or behind a reverse proxy.
 
 Tested with llama-swap v249 to v262. The header shows an amber note when the server reports a
 release outside that range.
+
+Llama Swatch is an independent project. It is not affiliated with or endorsed by llama-swap
+or its maintainers.
 
 ## What the states mean
 
