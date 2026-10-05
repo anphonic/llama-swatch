@@ -559,7 +559,7 @@ mod tests {
         let mut h = DecodeHealth::default();
         h.connect();
         for _ in 0..5 {
-            feed(&mut h, &[bad_upsert.clone()]);
+            feed(&mut h, std::slice::from_ref(&bad_upsert));
             assert_ne!(h.state(), Live);
             assert!(!h.sees_activity(), "a model must not show Idle while upserts fail");
             feed(&mut h, &[remove.clone(), model_status.clone()]);

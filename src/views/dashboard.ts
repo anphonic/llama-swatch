@@ -32,7 +32,7 @@ const EVENTS_BADGE: Record<EventStream, { text: string; title: string }> = {
   live: { text: "live", title: "Receiving live request events" },
   connected: {
     text: "waiting for events",
-    title: "Connected, waiting for events: the event stream is open but nothing has been read from it yet. llama-swap may send nothing while idle.",
+    title: "Connected, waiting for events: the event stream is open but no request event has been read from it yet. llama-swap may send nothing while idle.",
   },
   unreadable: {
     text: "events unreadable",
@@ -40,6 +40,10 @@ const EVENTS_BADGE: Record<EventStream, { text: string; title: string }> = {
   },
   offline: { text: "polling", title: "Live events unavailable: Busy and output-stall detection are off" },
 };
+
+/** `connected` after a frame failed to decode: something arrived, so "nothing read yet" would be wrong. */
+const CONNECTED_READ_FAILED_TITLE =
+  "Connected: events arrived but couldn't be read yet, so Busy/Stalled can't be shown until one is read.";
 
 const CONN_TEXT: Record<Connection["kind"], string> = {
   connecting: "Connecting…",
@@ -512,7 +516,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     versionNote.hidden = !s.versionNote;
     const badge = EVENTS_BADGE[s.eventStream];
     live.textContent = badge.text;
-    live.title = badge.title;
+    live.title = s.eventStream === "connected" && s.eventReadFailed ? CONNECTED_READ_FAILED_TITLE : badge.title;
     live.classList.toggle("badge-live", s.eventStream === "live");
     live.classList.toggle("badge-warn", s.eventStream === "unreadable");
 

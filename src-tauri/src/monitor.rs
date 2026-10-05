@@ -62,6 +62,10 @@ pub struct Snapshot {
     pub stats: Option<StatsSummary>,
     pub stats_available: bool,
     pub event_stream: EventStream,
+    /// An event on this connection failed to decode since the last one that decoded. Lets the
+    /// badge say "arrived but couldn't be read" instead of "nothing read yet". Only this flag
+    /// leaves Rust, never payload or error text.
+    pub event_read_failed: bool,
 }
 
 #[derive(Debug)]
@@ -165,10 +169,15 @@ impl MonitorState {
     /// Records one decode attempt of an event the monitor reads. Returns whether what the
     /// snapshot shows may have changed (stream health or which ready models count as Idle).
     /// Entering `Unreadable` drops the in-flight table: its removals may have been lost.
+    ///
+    /// Known limit: after events recover, a request that was already running when the table was
+    /// dropped is unknown until llama-swap sends an upsert for it (on output) or it finishes, so
+    /// its model may show Idle meanwhile.
     pub fn record_decode(&mut self, ok: bool) -> bool {
-        let before = (self.events.state(), self.events.sees_activity());
+        let look = |e: &DecodeHealth| (e.state(), e.sees_activity(), e.consecutive_failures() > 0);
+        let before = look(&self.events);
         self.events.record(ok);
-        let after = (self.events.state(), self.events.sees_activity());
+        let after = look(&self.events);
         if after.0 == EventStream::Unreadable && before.0 != EventStream::Unreadable {
             self.inflight.clear();
         }
@@ -212,6 +221,7 @@ impl MonitorState {
             }),
             stats_available: self.stats_available,
             event_stream: self.events.state(),
+            event_read_failed: self.events.consecutive_failures() > 0,
         }
     }
 
@@ -462,8 +472,8 @@ mod tests {
     #[test]
     fn unreadable_events_show_loaded_and_drop_stale_inflight() {
         let (mut m, t0) = busy_on_live_stream();
-        assert!(!m.record_decode(false), "one stray bad frame changes nothing");
-        assert!(!m.record_decode(false));
+        assert!(m.record_decode(false), "one stray bad frame only raises the failure flag");
+        assert!(!m.record_decode(false), "a second changes nothing shown");
         assert!(matches!(card(&m.snapshot(t0, WALL, &Thresholds::default()), "a").state, ModelState::Busy { .. }));
         assert!(m.record_decode(false), "third failure in a row -> unreadable");
         assert_eq!(m.consecutive_decode_failures(), 3);
@@ -483,12 +493,28 @@ mod tests {
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 300)], None)), t0, WALL);
         assert_eq!(card(&m.snapshot(t0, WALL, &Thresholds::default()), "a").state, ModelState::Loaded);
         m.events_connected();
-        assert!(matches!(card(&m.snapshot(t0, WALL, &Thresholds::default()), "a").state, ModelState::Idle { .. }));
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert!(matches!(card(&s, "a").state, ModelState::Idle { .. }));
+        assert!(!s.event_read_failed);
         assert!(m.record_decode(false), "a failure before any success makes idle unbelievable");
         let s = m.snapshot(t0, WALL, &Thresholds::default());
         assert_eq!(s.event_stream, EventStream::Connected);
+        assert!(s.event_read_failed, "the badge must not say nothing has been read");
         assert_eq!(card(&s, "a").state, ModelState::Loaded);
         assert_eq!(card(&s, "a").ttl_remaining_s, None, "the unload estimate assumes idle");
+        m.events_connected();
+        assert!(!m.snapshot(t0, WALL, &Thresholds::default()).event_read_failed, "reset on reconnect");
+    }
+
+    #[test]
+    fn a_stray_bad_frame_on_a_live_stream_is_reported() {
+        let (mut m, t0) = busy_on_live_stream();
+        assert!(m.record_decode(false), "the failure flag changes the snapshot");
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert_eq!(s.event_stream, EventStream::Live);
+        assert!(s.event_read_failed);
+        assert!(m.record_decode(true), "cleared by the next readable frame");
+        assert!(!m.snapshot(t0, WALL, &Thresholds::default()).event_read_failed);
     }
 
     #[test]
@@ -517,10 +543,14 @@ mod tests {
         let mut m = MonitorState::new("http://box:8080");
         m.apply_poll(PollOutcome::Ok(data(vec![running("a", "ready", 300)], None)), t0, WALL);
         let v = serde_json::to_value(m.snapshot(t0, WALL, &Thresholds::default())).unwrap();
-        for key in ["host", "connection", "lastOkMs", "version", "versionNote", "models", "stats", "statsAvailable", "eventStream"] {
+        for key in [
+            "host", "connection", "lastOkMs", "version", "versionNote", "models", "stats", "statsAvailable", "eventStream",
+            "eventReadFailed",
+        ] {
             assert!(v.get(key).is_some(), "missing {key}: {v}");
         }
         assert_eq!(v["eventStream"], "offline");
+        assert_eq!(v["eventReadFailed"], false);
         assert_eq!(v["versionNote"], serde_json::Value::Null);
         assert_eq!(v["models"][0]["state"], serde_json::json!({"kind":"loaded"}));
         assert_eq!(v["connection"], serde_json::json!({"kind":"connected","latencyMs":12}));

@@ -48,13 +48,15 @@ Busy and output-stall detection need llama-swap's live event stream (`/api/event
 The header badge shows its state:
 
 - `live`: events are arriving and being read.
-- `waiting for events`: the stream is open but nothing has been read from it yet (llama-swap
-  may send nothing while idle). Ready models still show Idle unless an event fails to decode.
-- `events unreadable` (amber): three events in a row could not be decoded, so this llama-swap
-  sends events in a shape this version of the monitor can't read.
+- `waiting for events`: the stream is open but no request event has been read from it yet
+  (llama-swap may send nothing while idle). Ready models still show Idle unless an event fails
+  to decode.
+- `events unreadable` (amber): three request events in a row could not be decoded, so this
+  llama-swap sends events in a shape this version of the monitor can't read.
 - `polling`: no event stream.
 
-Without readable events a ready model shows as Loaded rather than Idle.
+Without readable events a ready model shows as Loaded rather than Idle. After events recover,
+a request that was already running may show as Idle until it sends output or finishes.
 
 ## Window
 

@@ -77,6 +77,8 @@ export interface Snapshot {
   stats: StatsSummary | null;
   statsAvailable: boolean;
   eventStream: EventStream;
+  /** An event on this connection failed to decode since the last one that decoded. */
+  eventReadFailed: boolean;
 }
 
 export interface Thresholds {
