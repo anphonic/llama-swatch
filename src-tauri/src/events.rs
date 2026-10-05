@@ -10,12 +10,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::api::null_default;
 
+/// The outer frame. `data` is kept as raw JSON so that an event type this monitor doesn't read
+/// is recognised (and ignored) even when its `data` isn't the usual string.
 #[derive(Debug, Deserialize)]
 struct Envelope {
     #[serde(rename = "type")]
     kind: String,
     #[serde(default)]
-    data: String,
+    data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -59,11 +61,13 @@ pub enum StreamEvent {
     Other,
 }
 
+/// Errors only when the frame's type can't be read, or an `inflight` payload doesn't decode.
+/// Any other type is identified from `type` alone, whatever its `data` holds.
 pub fn decode_event(payload: &str) -> Result<StreamEvent, serde_json::Error> {
     let env: Envelope = serde_json::from_str(payload)?;
     Ok(match env.kind.as_str() {
         "modelStatus" => StreamEvent::ModelStatus,
-        "inflight" => StreamEvent::Inflight(serde_json::from_str(&env.data)?),
+        "inflight" => StreamEvent::Inflight(serde_json::from_str(&String::deserialize(env.data)?)?),
         _ => StreamEvent::Other,
     })
 }
@@ -154,15 +158,25 @@ impl InflightTable {
 /// What one frame says about whether this monitor can read the in-flight data the cards need:
 /// `Some(true)` proves it can, `Some(false)` is a decode failure, `None` proves nothing.
 ///
-/// Only an inflight `snapshot`, or an `upsert` carrying an entry, counts as success: those are
-/// the frames whose entries had to decode. `remove` (just an id), `modelStatus` and other event
-/// types are neutral. If they counted, a llama-swap that changed only the entry shape would keep
-/// the stream `Live` on removes alone, with an empty table showing Idle while models serve.
+/// - Success: an inflight `snapshot` whose entries all name a model (an empty snapshot counts),
+///   or an `upsert` whose entry names a model. Those are the frames whose entries had to decode
+///   into something a card can match.
+/// - Failure: a frame whose type can't be read (not JSON, no string `type`), an inflight frame
+///   whose payload doesn't decode, or a snapshot/upsert entry with an empty `model`. Entries
+///   decode leniently (`#[serde(default)]`), so an empty model means the shape drifted, e.g. the
+///   field was renamed.
+/// - Neutral: `remove` (just an id), an `upsert` with no entry, `modelStatus`, and any other
+///   event type, even when its `data` doesn't parse (see [`decode_event`]).
+///
+/// If neutral frames counted as success, a llama-swap that changed only the entry shape would keep
+/// the stream `Live` on removes alone, with an empty table showing Idle while models serve. If
+/// they counted as failure, an idle server sending a new event type would turn `Unreadable`.
 pub fn health_signal(r: &Result<StreamEvent, serde_json::Error>) -> Option<bool> {
+    let named = |e: &InflightEntry| !e.model.is_empty();
     match r {
-        Ok(StreamEvent::Inflight(m)) => match m.operation.as_str() {
-            "snapshot" => Some(true),
-            "upsert" if m.request.is_some() => Some(true),
+        Ok(StreamEvent::Inflight(m)) => match (m.operation.as_str(), &m.request) {
+            ("snapshot", _) => Some(m.requests.iter().all(named)),
+            ("upsert", Some(e)) => Some(named(e)),
             _ => None,
         },
         Ok(StreamEvent::ModelStatus | StreamEvent::Other) => None,
@@ -572,5 +586,63 @@ mod tests {
         feed(&mut h, &[good_upsert]);
         assert_eq!(h.state(), Live);
         assert!(h.sees_activity());
+    }
+
+    #[test]
+    fn entries_without_a_model_are_failures() {
+        use EventStream::*;
+        // A llama-swap that renamed `model`: the entry still decodes (serde defaults) but
+        // matches no card, so it must not make the stream Live.
+        let mut renamed = wire_entry(None);
+        let model = renamed.as_object_mut().unwrap().remove("model").unwrap();
+        renamed["model_id"] = model;
+        let upsert = envelope("inflight", json!({"operation":"upsert","request":renamed}));
+        assert!(decode_event(&upsert).is_ok(), "test frame must still decode");
+        assert_eq!(health_signal(&decode_event(&upsert)), Some(false));
+
+        let snapshot = envelope("inflight", json!({"operation":"snapshot","requests":[wire_entry(None), renamed]}));
+        assert_eq!(health_signal(&decode_event(&snapshot)), Some(false), "every entry needs a model");
+
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for _ in 0..5 {
+            feed(&mut h, std::slice::from_ref(&upsert));
+            assert_ne!(h.state(), Live);
+            assert!(!h.sees_activity());
+        }
+        assert_eq!(h.state(), Unreadable);
+    }
+
+    #[test]
+    fn unknown_event_types_with_odd_data_stay_neutral() {
+        let odd = [
+            json!({"type":"newThing","data":{"a":1}}).to_string(),
+            json!({"type":"newThing","data":42}).to_string(),
+            json!({"type":"logData","data":null}).to_string(),
+            json!({"type":"metrics","data":[1,2],"extra":true}).to_string(),
+            json!({"type":"modelStatus","data":{"model":"a"}}).to_string(),
+        ];
+        let mut h = DecodeHealth::default();
+        h.connect();
+        for p in &odd {
+            assert_eq!(health_signal(&decode_event(p)), None, "{p}");
+        }
+        feed(&mut h, &odd);
+        assert_eq!(h.state(), EventStream::Connected);
+        assert!(h.sees_activity(), "an idle server sending new event types keeps models Idle");
+    }
+
+    #[test]
+    fn frames_without_a_readable_type_are_failures() {
+        for p in [
+            "not json".to_string(),
+            "{not json".to_string(),
+            json!({"data":"x"}).to_string(),
+            json!({"type":7,"data":"x"}).to_string(),
+            json!(["inflight"]).to_string(),
+            json!({"type":"inflight","data":{"operation":"upsert"}}).to_string(),
+        ] {
+            assert_eq!(health_signal(&decode_event(&p)), Some(false), "{p}");
+        }
     }
 }
