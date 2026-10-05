@@ -37,7 +37,7 @@ pub enum ModelState {
         streaming: usize,
         /// Requests whose reply has started (headers sent) but has no output yet. Usually
         /// brief: llama.cpp's server sends headers only with its first result, even when
-        /// streaming, so this group mainly shows up with other backends.
+        /// streaming, so this group shows up e.g. with other backends.
         waiting_first_token: usize,
         /// Requests with no reply at all yet: a non-streaming chat (`stream: false`) or an
         /// embeddings request until it finishes, and with llama.cpp also a streaming request

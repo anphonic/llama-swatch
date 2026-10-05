@@ -49,7 +49,7 @@ interface Detail {
 
 const SEP = " · ";
 
-/** Busy: "3 streaming · 1 replying · 2 awaiting · reply slow · last output 4 s ago · 41.8 tok/s",
+/** Busy: "3 streaming · 1 started · 2 pending · reply slow · last output 4 s ago · 41.8 tok/s",
  *  zero parts omitted; the tooltip spells the groups out. The hints sit before "last output" so
  *  they survive ellipsizing; tok/s follows. `ageS` is how long ago the snapshot arrived, so
  *  "last output" keeps counting between snapshots, clamped to the stall timeout so it never
@@ -62,13 +62,13 @@ function describeBusy(
 ): Detail {
   const text = [
     s.streaming ? `${s.streaming} streaming` : null,
-    s.waitingFirstToken ? `${s.waitingFirstToken} replying` : null,
-    s.awaitingReply ? `${s.awaitingReply} awaiting` : null,
+    s.waitingFirstToken ? `${s.waitingFirstToken} started` : null,
+    s.awaitingReply ? `${s.awaitingReply} pending` : null,
   ].filter(Boolean).join(SEP);
   const groups = [
     s.streaming ? `${s.streaming} streaming output` : null,
-    s.waitingFirstToken ? `${s.waitingFirstToken} reply started, no first token yet` : null,
-    s.awaitingReply ? `${s.awaitingReply} awaiting a reply` : null,
+    s.waitingFirstToken ? `${s.waitingFirstToken} started (reply begun, no first token yet)` : null,
+    s.awaitingReply ? `${s.awaitingReply} pending (no reply yet)` : null,
   ].filter(Boolean).join(", ");
   const warn = [s.firstTokenLong ? "waiting long" : null, s.awaitingLong ? "reply slow" : null]
     .filter(Boolean).join(SEP) || undefined;
