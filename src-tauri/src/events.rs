@@ -206,9 +206,9 @@ pub const UNREADABLE_AFTER: u32 = 3;
 /// Per-connection decode bookkeeping behind [`EventStream`]. Holds only counts: payload and
 /// error text never reach it (payloads can carry request headers).
 ///
-/// Fed by [`health_signal`]: a success is an inflight `snapshot` or `upsert` whose entries
-/// decoded; a failure is a frame that did not decode. Everything else (`remove`, `modelStatus`,
-/// logs, metrics) is neutral: it neither resets nor adds to the failure streak, because it
+/// Fed by [`health_signal`]: a success is an inflight `snapshot` or `upsert` whose entries all
+/// name a model; a failure is a frame that did not decode or an entry with an empty `model`.
+/// Everything else (`remove`, `modelStatus`, logs, metrics) is neutral: it neither resets nor adds to the failure streak, because it
 /// proves nothing about the entry data the cards need.
 #[derive(Debug, Default)]
 pub struct DecodeHealth {
