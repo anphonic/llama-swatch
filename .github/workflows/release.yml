@@ -45,5 +45,35 @@ jobs:
           releaseName: "llama-swap Monitor ${{ github.ref_name }}"
           releaseBody: "Unsigned build. See the README for first-launch steps on each OS."
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
+
+  checksums:
+    # Runs only after every platform job has uploaded its assets to the draft
+    # release, so the checksum file covers the complete release. The release is
+    # published here, so a failed platform build leaves it as an unpublished draft.
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download release assets
+        run: |
+          mkdir assets
+          gh release download "$TAG" --dir assets --pattern '*'
+          rm -f assets/SHA256SUMS.txt
+      - name: Compute SHA256SUMS.txt
+        working-directory: assets
+        env:
+          LC_ALL: C
+        run: |
+          sha256sum -- * > ../SHA256SUMS.txt
+          cat ../SHA256SUMS.txt
+      - name: Upload SHA256SUMS.txt
+        run: gh release upload "$TAG" SHA256SUMS.txt --clobber
+      - name: Publish release
+        run: gh release edit "$TAG" --draft=false
