@@ -514,7 +514,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     versionNote.textContent = s.versionNote ?? "";
     versionNote.title = s.versionNote ?? "";
     versionNote.hidden = !s.versionNote;
-    const badge = EVENTS_BADGE[s.eventStream];
+    // `??` guards runtime data: a backend state this build doesn't know must not break rendering.
+    const badge = EVENTS_BADGE[s.eventStream] ?? EVENTS_BADGE.offline;
     live.textContent = badge.text;
     live.title = s.eventStream === "connected" && s.eventReadFailed ? CONNECTED_READ_FAILED_TITLE : badge.title;
     live.classList.toggle("badge-live", s.eventStream === "live");
