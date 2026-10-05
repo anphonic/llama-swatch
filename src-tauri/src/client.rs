@@ -14,6 +14,12 @@ use crate::api::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 /// `GET /upstream/{model}/` blocks until the model is up, which can take minutes.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// At most 4096 bytes of a refusal body are read when a load is answered with a 4xx.
+const REFUSAL_BODY_CAP: usize = 4096;
+/// At most 256 bytes are read past the cap so a key straddling it can be redacted whole.
+const REFUSAL_KEY_READ_AHEAD: usize = 256;
+/// At most 200 characters of llama-swap's refusal text are shown to the user.
+const REFUSAL_REASON_CHARS: usize = 200;
 /// Unloading waits for the upstream process to stop.
 const UNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -29,6 +35,14 @@ pub enum ClientError {
     Http(u16),
     #[error("{0}")]
     Redirect(String),
+    /// llama-swap answered a load with a 4xx and `/running` shows the model is not starting.
+    /// Holds llama-swap's reason, already sanitized for display (no key, URL credentials or query).
+    #[error("llama-swap refused it: {0}")]
+    LoadRefused(String),
+    /// llama-swap answered a load with a 4xx and `/running` could not be read to tell whether the
+    /// model started. Holds the whole message, already sanitized for display.
+    #[error("{0}")]
+    LoadUnconfirmed(String),
     #[error("invalid model id")]
     InvalidModelId,
     #[error("unexpected response: {0}")]
@@ -114,7 +128,11 @@ impl LlamaSwapClient {
     }
 
     async fn send(rb: RequestBuilder) -> Result<Response, ClientError> {
-        let resp = rb.send().await.map_err(|e| ClientError::Unreachable(describe(e)))?;
+        Self::check(rb.send().await.map_err(|e| ClientError::Unreachable(describe(e)))?)
+    }
+
+    /// Maps a response's status to `Ok(resp)` or the matching error.
+    fn check(resp: Response) -> Result<Response, ClientError> {
         match resp.status() {
             s if s.is_success() => Ok(resp),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ClientError::Unauthorized),
@@ -163,15 +181,47 @@ impl LlamaSwapClient {
     }
 
     /// Asks llama-swap to start `id` by requesting its upstream root. The call blocks until the
-    /// model is up (minutes, possibly). Callers pass only ids llama-swap itself listed, so any
-    /// answer below 500 means the upstream came up, even a 404 from one with no root page; the
-    /// body is ignored. 5xx, redirects, a rejected key and network errors are failures.
+    /// model is up (minutes, possibly). A 2xx means it came up. A 4xx is ambiguous: llama-swap
+    /// refuses with one (unknown model, path in `ignorePaths`, no router) without starting
+    /// anything, but a started upstream with no root page answers 404 too. So on a 4xx `/running`
+    /// is asked once: a model listed as `ready` or `starting` is a success, anything else is
+    /// [`ClientError::LoadRefused`] with llama-swap's capped, sanitized reason, and a `/running`
+    /// that fails is [`ClientError::LoadUnconfirmed`]. 5xx, redirects, a rejected key (401/403)
+    /// and network errors fail as for any other call.
     pub async fn load_model(&self, id: &str) -> Result<(), ClientError> {
         let path = format!("/upstream/{}/", encode_segment(id)?);
-        match Self::send(self.get(&path).timeout(LOAD_TIMEOUT)).await {
-            Ok(_) | Err(ClientError::NotFound) => Ok(()),
-            Err(ClientError::Http(code)) if code < 500 => Ok(()),
-            Err(e) => Err(e),
+        let resp = self
+            .get(&path)
+            .timeout(LOAD_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| ClientError::Unreachable(describe(e)))?;
+        let status = resp.status();
+        if !status.is_client_error() || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            return Self::check(resp).map(drop);
+        }
+        // Read a little past the cap so a key straddling it is redacted whole; a longer key cut
+        // at the end is still masked by `redact`'s trailing-prefix check.
+        let key = self.key.as_deref();
+        let ahead = key.map_or(0, |k| k.len().min(REFUSAL_KEY_READ_AHEAD));
+        let (body, truncated) = read_capped(resp, REFUSAL_BODY_CAP + ahead).await;
+        let reason = sanitize_reason(&redact(&body, key, truncated));
+        let code = status.as_u16();
+        match self.running().await {
+            Ok(running)
+                if running.iter().any(|m| m.model == id && matches!(m.state.as_str(), "ready" | "starting")) =>
+            {
+                Ok(())
+            }
+            Ok(_) if reason.is_empty() => Err(ClientError::LoadRefused(format!("HTTP {code}"))),
+            Ok(_) => Err(ClientError::LoadRefused(reason)),
+            Err(_) => {
+                let mut msg = format!("llama-swap answered HTTP {code} and the model list could not be checked");
+                if !reason.is_empty() {
+                    msg = format!("{msg}: {reason}");
+                }
+                Err(ClientError::LoadUnconfirmed(msg))
+            }
         }
     }
 
@@ -184,6 +234,87 @@ impl LlamaSwapClient {
     pub async fn events(&self) -> Result<Response, ClientError> {
         Self::send(self.get("/api/events").header("Accept", "text/event-stream")).await
     }
+}
+
+/// At most `cap` bytes of the body, and whether it may have been cut short: true when the cap
+/// was reached (more may have followed) or a read error ended the body early.
+async fn read_capped(mut resp: Response, cap: usize) -> (Vec<u8>, bool) {
+    let mut buf = Vec::new();
+    while buf.len() < cap {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk[..chunk.len().min(cap - buf.len())]),
+            Ok(None) => return (buf, false),
+            Err(_) => return (buf, true),
+        }
+    }
+    (buf, true)
+}
+
+/// Server bytes as text with the API key, any `user:password@` and any `?query`/`#fragment` in a
+/// URL removed. Every byte covered by an occurrence of the key (overlapping ones included) is
+/// masked on the raw bytes, before decoding. When the body was `truncated`, a trailing part that
+/// could be the start of a key cut off there is masked too, so a multibyte key cut mid-character
+/// is caught as well. Each masked run becomes `<redacted>`.
+fn redact(body: &[u8], key: Option<&str>, truncated: bool) -> String {
+    let mut masked = vec![false; body.len()];
+    if let Some(k) = key.map(str::as_bytes).filter(|k| !k.is_empty()) {
+        for i in 0..body.len() {
+            if body[i..].starts_with(k) {
+                masked[i..i + k.len()].fill(true);
+            }
+        }
+        // Longest proper prefix of the key that a cut-short body ends with.
+        let mut tail = (1..k.len().min(body.len() + 1)).rev().map(|n| body.len() - n);
+        if let Some(at) = tail.find(|&at| truncated && k.starts_with(&body[at..])) {
+            masked[at..].fill(true);
+        }
+    }
+    let mut bytes = Vec::with_capacity(body.len());
+    for (i, &b) in body.iter().enumerate() {
+        if !masked[i] {
+            bytes.push(b);
+        } else if i == 0 || !masked[i - 1] {
+            bytes.extend_from_slice(b"<redacted>");
+        }
+    }
+    let mut out = String::from_utf8_lossy(&bytes).into_owned();
+    // Only URLs with a scheme (`x://`) are recognized; a bare `host/path?q` is left as is.
+    let mut from = 0;
+    while let Some(i) = out[from..].find("://") {
+        let host = from + i + 3;
+        let rest = &out[host..];
+        let url_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let end = rest[..url_end].find(['/', '?', '#']).unwrap_or(url_end);
+        if let Some(at) = rest[..end].rfind('@') {
+            out.replace_range(host..host + at + 1, "");
+            continue;
+        }
+        if let Some(q) = rest[..url_end].find(['?', '#']) {
+            out.replace_range(host + q..host + url_end, "");
+        }
+        from = host;
+    }
+    out
+}
+
+/// Server text made safe to show: control, bidi and zero-width characters become spaces,
+/// whitespace runs collapse, and the result is cut to [`REFUSAL_REASON_CHARS`] characters.
+fn sanitize_reason(text: &str) -> String {
+    let cleaned: String = text
+        .chars()
+        .map(|c| match c {
+            c if c.is_control() => ' ',
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' => ' ',
+            c => c,
+        })
+        .collect();
+    let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.chars().count() <= REFUSAL_REASON_CHARS {
+        return joined;
+    }
+    let mut cut: String = joined.chars().take(REFUSAL_REASON_CHARS - 1).collect();
+    cut.push('\u{2026}');
+    cut
 }
 
 /// Percent-encodes `id` as exactly one URL path segment: everything but unreserved characters is
@@ -387,6 +518,81 @@ mod tests {
         match c.health().await {
             Err(ClientError::Unreachable(m)) => assert!(m.contains("connection refused"), "{m}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_capped_stops_at_the_cap() {
+        let server = MockServer::start().await;
+        Mock::given(any()).respond_with(ResponseTemplate::new(409).set_body_string("y".repeat(100_000))).mount(&server).await;
+        let resp = reqwest::get(server.uri()).await.unwrap();
+        let (body, truncated) = read_capped(resp, REFUSAL_BODY_CAP).await;
+        assert_eq!((body.len(), truncated), (REFUSAL_BODY_CAP, true)); // at most 4096
+        let resp = reqwest::get(server.uri()).await.unwrap();
+        let (body, truncated) = read_capped(resp, 1_000_000).await;
+        assert_eq!((body.len(), truncated), (100_000, false));
+    }
+
+    /// Redacts `text` as a body that was cut short at the read cap.
+    fn red(text: &str, key: &str) -> String {
+        redact(text.as_bytes(), Some(key), true)
+    }
+
+    #[test]
+    fn redact_masks_whole_and_trailing_partial_keys() {
+        assert_eq!(red("a k1 b k1", "k1"), "a <redacted> b <redacted>");
+        assert_eq!(red("end k", "key"), "end <redacted>");
+        assert_eq!(red("end ke", "key"), "end <redacted>");
+        assert_eq!(red("end kx", "key"), "end kx");
+        assert_eq!(redact(b"no key", None, true), "no key");
+        assert_eq!(redact(b"abc", Some(""), true), "abc");
+    }
+
+    #[test]
+    fn redact_keeps_a_whole_body_that_merely_ends_like_the_key() {
+        assert_eq!(redact(b"model not found.", Some(".abc"), false), "model not found.");
+        assert_eq!(redact(b"a .abc b .ab", Some(".abc"), false), "a <redacted> b .ab");
+        assert_eq!(redact(b"model not found.", Some(".abc"), true), "model not found<redacted>");
+    }
+
+    #[test]
+    fn redact_masks_bordered_keys_at_the_end() {
+        // Regression: stripping a trailing prefix before replacing broke the full-key match.
+        assert_eq!(red("x abca", "abca"), "x <redacted>");
+        assert_eq!(red("bad key: abcdabcd", "abcdabcd"), "bad key: <redacted>");
+        assert_eq!(red("bad key: xA1b2C3d4E5x", "xA1b2C3d4E5x"), "bad key: <redacted>");
+    }
+
+    #[test]
+    fn redact_masks_a_multibyte_key_cut_mid_character() {
+        let key = "abcdefgh\u{e9}-zz";
+        let cut = "x abcdefgh\u{e9}".len() - 1; // inside the two bytes of the e-acute
+        assert_eq!(redact(&"x abcdefgh\u{e9}-zz".as_bytes()[..cut], Some(key), true), "x <redacted>");
+    }
+
+    #[test]
+    fn redact_never_leaves_four_bytes_of_the_key_at_any_cut() {
+        // Longer than REFUSAL_KEY_READ_AHEAD, so it can be cut anywhere by the read cap.
+        let long: String = (0..300).map(|i| b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i * 7 % 36] as char).collect();
+        let keys = ["xA1b2C3d4E5x", "abcdabcd", "aaaa1aaaa", "abca", "s3cret-key-0123456789", "abcdefgh\u{e9}-zz", &long];
+        for key in keys {
+            // Any leaked run of 4+ bytes contains a shortest char-aligned window of 4+ bytes.
+            let bounds: Vec<usize> = key.char_indices().map(|(i, _)| i).chain([key.len()]).collect();
+            let windows: Vec<&str> = bounds
+                .iter()
+                .filter_map(|&a| bounds.iter().find(|&&b| b >= a + 4).map(|&b| &key[a..b]))
+                .collect();
+            for prefix in ["", "bad: ", "<<"] {
+                for suffix in ["", " zz.", " tail"] {
+                    let full = format!("{prefix}{key}{suffix}");
+                    for cut in 0..=full.len() {
+                        let out = redact(&full.as_bytes()[..cut], Some(key), true);
+                        for w in &windows {
+                            assert!(!out.contains(w), "key {key:?} cut {cut}: {out:?}");
+                        }
+                    }
+                }
+            }
         }
     }
 
