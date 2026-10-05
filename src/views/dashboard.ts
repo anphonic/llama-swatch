@@ -49,31 +49,47 @@ interface Detail {
 
 const SEP = " · ";
 
-/** Busy: "3 streaming · 2 queued · queued long · last output 4 s ago · 41.8 tok/s", zero parts
- *  omitted. The hint sits before "last output" so it survives ellipsizing; tok/s follows it.
- *  `ageS` is how long ago the snapshot arrived, so "last output" keeps counting between
- *  snapshots, clamped to the stall timeout so it never contradicts the Busy pill. */
+/** Busy: "3 streaming · 1 started · 2 pending · reply slow · last output 4 s ago · 41.8 tok/s",
+ *  zero parts omitted; the tooltip spells the groups out. The hints sit before "last output" so
+ *  they survive ellipsizing; tok/s follows. `ageS` is how long ago the snapshot arrived, so
+ *  "last output" keeps counting between snapshots, clamped to the stall timeout so it never
+ *  contradicts the Busy pill. */
 function describeBusy(
   s: Extract<ModelState, { kind: "busy" }>,
   tok: number | undefined,
   ageS: number,
-  stallTimeoutS: number,
+  t: Settings["thresholds"],
 ): Detail {
-  const text = [s.streaming ? `${s.streaming} streaming` : null, s.queued ? `${s.queued} queued` : null]
-    .filter(Boolean)
-    .join(SEP);
-  const warn = s.queuedLong ? "queued long" : undefined;
+  const text = [
+    s.streaming ? `${s.streaming} streaming` : null,
+    s.waitingFirstToken ? `${s.waitingFirstToken} started` : null,
+    s.awaitingReply ? `${s.awaitingReply} pending` : null,
+  ].filter(Boolean).join(SEP);
+  const groups = [
+    s.streaming ? `${s.streaming} streaming output` : null,
+    s.waitingFirstToken ? `${s.waitingFirstToken} started (reply begun, no first token yet)` : null,
+    s.awaitingReply ? `${s.awaitingReply} pending (no reply yet)` : null,
+  ].filter(Boolean).join(", ");
+  const warn = [s.firstTokenLong ? "waiting long" : null, s.awaitingLong ? "reply slow" : null]
+    .filter(Boolean).join(SEP) || undefined;
   const rest = [
-    s.lastOutputS !== null ? `last output ${formatDuration(Math.min(s.lastOutputS + ageS, stallTimeoutS))} ago` : "waiting",
+    s.lastOutputS !== null ? `last output ${formatDuration(Math.min(s.lastOutputS + ageS, t.streamStallTimeoutS))} ago` : "waiting",
     tok !== undefined && tok > 0 ? `${tok.toFixed(1)} tok/s` : null,
   ].filter(Boolean).join(SEP);
   const line = [text, warn, rest].filter(Boolean).join(SEP);
-  return { text, warn, rest, title: `${line}\noldest request ${formatDuration(s.oldestElapsedS + ageS)}` };
+  const notes = [
+    groups,
+    `oldest request ${formatDuration(s.oldestElapsedS + ageS)}`,
+    s.awaitingLong
+      ? `No reply yet after the first-byte timeout (${t.firstByteTimeoutS} s). A non-streaming chat or embeddings request sends nothing until it finishes, and llama.cpp sends nothing while it processes a prompt, so it may still be working.`
+      : null,
+  ].filter(Boolean).join("\n");
+  return { text, warn, rest, title: `${line}\n${notes}` };
 }
 
 function describe(card: ModelCard, settings: Settings, ageS: number): Detail {
   const s = card.state;
-  if (s.kind === "busy") return describeBusy(s, lastOf(card.tokSHistory), ageS, settings.thresholds.streamStallTimeoutS);
+  if (s.kind === "busy") return describeBusy(s, lastOf(card.tokSHistory), ageS, settings.thresholds);
   if (s.kind === "loading") {
     const text = `Loading ${formatDuration(s.elapsedS)}`;
     if (!s.slow) return { text };

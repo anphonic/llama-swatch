@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::api::null_default;
 
@@ -28,6 +28,16 @@ pub struct InflightEntry {
     pub method: String,
     pub resp_bytes: i64,
     pub elapsed_ms: i64,
+    /// llama-swap's `resp_headers` is non-empty: the proxied reply has sent its headers.
+    /// Only this flag is kept; header names and values are dropped while decoding.
+    #[serde(rename = "resp_headers", deserialize_with = "non_empty_object")]
+    pub response_started: bool,
+}
+
+/// `true` for a non-empty JSON object. Missing (via `#[serde(default)]`), `null`, `{}` and
+/// any unexpected shape are `false`, so an odd value never drops the whole entry.
+fn non_empty_object<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(matches!(serde_json::Value::deserialize(d)?, serde_json::Value::Object(m) if !m.is_empty()))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -63,6 +73,8 @@ pub struct InflightView {
     pub elapsed: Duration,
     pub resp_bytes: i64,
     pub since_bytes_change: Duration,
+    /// Reply headers have been seen (see `InflightEntry::response_started`).
+    pub response_started: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +137,7 @@ impl InflightTable {
                 elapsed: now.saturating_duration_since(t.started),
                 resp_bytes: t.entry.resp_bytes,
                 since_bytes_change: now.saturating_duration_since(t.last_bytes_change),
+                response_started: t.entry.response_started,
             })
             .collect()
     }
@@ -166,11 +179,83 @@ mod tests {
                 assert_eq!(m.operation, "snapshot");
                 assert_eq!(m.requests, vec![InflightEntry {
                     id: "1".into(), model: "qwen".into(), req_path: "/v1/chat/completions".into(),
-                    method: "POST".into(), resp_bytes: 0, elapsed_ms: 1200,
+                    method: "POST".into(), resp_bytes: 0, elapsed_ms: 1200, response_started: false,
                 }]);
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// A realistic llama-swap entry, as sent in an `upsert`.
+    fn wire_entry(resp_headers: Option<serde_json::Value>) -> serde_json::Value {
+        let mut e = json!({
+            "id": "7", "timestamp": "2026-10-05T12:00:00Z", "model": "qwen",
+            "req_path": "/v1/chat/completions", "method": "POST",
+            "req_headers": {"Content-Type": "application/json"}, "remote_ip": "127.0.0.1",
+            "resp_bytes": 0, "elapsed_ms": 3000, "metadata": {}
+        });
+        if let Some(h) = resp_headers {
+            e["resp_headers"] = h;
+        }
+        e
+    }
+
+    fn decode_upsert(entry: serde_json::Value) -> InflightEntry {
+        let payload = envelope("inflight", json!({"operation":"upsert","request":entry}));
+        match decode_event(&payload).unwrap() {
+            StreamEvent::Inflight(m) => m.request.expect("request"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_missing_or_null_resp_headers_mean_not_started() {
+        assert!(!decode_upsert(wire_entry(Some(json!({})))).response_started);
+        assert!(!decode_upsert(wire_entry(None)).response_started);
+        assert!(!decode_upsert(wire_entry(Some(serde_json::Value::Null))).response_started);
+    }
+
+    #[test]
+    fn non_empty_resp_headers_mean_started() {
+        let e = decode_upsert(wire_entry(Some(json!({"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}))));
+        assert!(e.response_started);
+        assert_eq!((e.id.as_str(), e.model.as_str(), e.elapsed_ms), ("7", "qwen", 3000));
+    }
+
+    #[test]
+    fn unexpected_resp_headers_shape_does_not_fail_the_entry() {
+        let e = decode_upsert(wire_entry(Some(json!("text/event-stream"))));
+        assert!(!e.response_started);
+        assert_eq!(e.id, "7");
+    }
+
+    #[test]
+    fn upsert_with_headers_flips_the_view_to_started() {
+        let t0 = Instant::now();
+        let mut t = InflightTable::default();
+        t.apply(upsert(decode_upsert(wire_entry(Some(json!({}))))), t0);
+        assert!(!t.views_for("qwen", t0)[0].response_started);
+        t.apply(upsert(decode_upsert(wire_entry(Some(json!({"Content-Type": "text/event-stream"}))))), t0 + Duration::from_secs(2));
+        let v = t.views_for("qwen", t0 + Duration::from_secs(2));
+        assert!(v[0].response_started);
+        assert_eq!(v[0].resp_bytes, 0);
+        assert_eq!(v[0].elapsed.as_secs(), 5, "start time is kept from first sighting");
+
+        // A snapshot (e.g. after a reconnect) also flips an entry already in the table.
+        let mut other = wire_entry(Some(json!({})));
+        other["id"] = json!("8");
+        other["model"] = json!("gemma");
+        t.apply(upsert(decode_upsert(other.clone())), t0);
+        assert!(!t.views_for("gemma", t0)[0].response_started);
+        other["resp_headers"] = json!({"Content-Type": "text/event-stream"});
+        let snap = envelope("inflight", json!({"operation":"snapshot","requests":[other]}));
+        match decode_event(&snap).unwrap() {
+            StreamEvent::Inflight(m) => t.apply(m, t0 + Duration::from_secs(4)),
+            e => panic!("unexpected {e:?}"),
+        }
+        let v = t.views_for("gemma", t0 + Duration::from_secs(4));
+        assert!(v[0].response_started);
+        assert_eq!(v[0].elapsed.as_secs(), 7, "snapshot keeps the survivor's start");
     }
 
     #[test]
