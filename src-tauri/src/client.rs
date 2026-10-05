@@ -204,8 +204,8 @@ impl LlamaSwapClient {
         // at the end is still masked by `redact`'s trailing-prefix check.
         let key = self.key.as_deref();
         let ahead = key.map_or(0, |k| k.len().min(REFUSAL_KEY_READ_AHEAD));
-        let body = read_capped(resp, REFUSAL_BODY_CAP + ahead).await;
-        let reason = sanitize_reason(&redact(&body, key));
+        let (body, truncated) = read_capped(resp, REFUSAL_BODY_CAP + ahead).await;
+        let reason = sanitize_reason(&redact(&body, key, truncated));
         let code = status.as_u16();
         match self.running().await {
             Ok(running)
@@ -236,24 +236,26 @@ impl LlamaSwapClient {
     }
 }
 
-/// At most `cap` bytes of the body; a read error ends the body early.
-async fn read_capped(mut resp: Response, cap: usize) -> Vec<u8> {
+/// At most `cap` bytes of the body, and whether it may have been cut short: true when the cap
+/// was reached (more may have followed) or a read error ended the body early.
+async fn read_capped(mut resp: Response, cap: usize) -> (Vec<u8>, bool) {
     let mut buf = Vec::new();
     while buf.len() < cap {
         match resp.chunk().await {
             Ok(Some(chunk)) => buf.extend_from_slice(&chunk[..chunk.len().min(cap - buf.len())]),
-            _ => break,
+            Ok(None) => return (buf, false),
+            Err(_) => return (buf, true),
         }
     }
-    buf
+    (buf, true)
 }
 
 /// Server bytes as text with the API key, any `user:password@` and any `?query`/`#fragment` in a
-/// URL removed. Every byte covered by an occurrence of the key (overlapping ones included) and a
-/// trailing part that could be the start of a key cut off by a read cap is masked on the raw
-/// bytes, before decoding, so a multibyte key cut mid-character is caught too. Each masked run
-/// becomes `<redacted>`.
-fn redact(body: &[u8], key: Option<&str>) -> String {
+/// URL removed. Every byte covered by an occurrence of the key (overlapping ones included) is
+/// masked on the raw bytes, before decoding. When the body was `truncated`, a trailing part that
+/// could be the start of a key cut off there is masked too, so a multibyte key cut mid-character
+/// is caught as well. Each masked run becomes `<redacted>`.
+fn redact(body: &[u8], key: Option<&str>, truncated: bool) -> String {
     let mut masked = vec![false; body.len()];
     if let Some(k) = key.map(str::as_bytes).filter(|k| !k.is_empty()) {
         for i in 0..body.len() {
@@ -261,9 +263,9 @@ fn redact(body: &[u8], key: Option<&str>) -> String {
                 masked[i..i + k.len()].fill(true);
             }
         }
-        // Longest proper prefix of the key that the body ends with.
+        // Longest proper prefix of the key that a cut-short body ends with.
         let mut tail = (1..k.len().min(body.len() + 1)).rev().map(|n| body.len() - n);
-        if let Some(at) = tail.find(|&at| k.starts_with(&body[at..])) {
+        if let Some(at) = tail.find(|&at| truncated && k.starts_with(&body[at..])) {
             masked[at..].fill(true);
         }
     }
@@ -524,13 +526,16 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(any()).respond_with(ResponseTemplate::new(409).set_body_string("y".repeat(100_000))).mount(&server).await;
         let resp = reqwest::get(server.uri()).await.unwrap();
-        assert_eq!(read_capped(resp, REFUSAL_BODY_CAP).await.len(), REFUSAL_BODY_CAP); // at most 4096
+        let (body, truncated) = read_capped(resp, REFUSAL_BODY_CAP).await;
+        assert_eq!((body.len(), truncated), (REFUSAL_BODY_CAP, true)); // at most 4096
         let resp = reqwest::get(server.uri()).await.unwrap();
-        assert_eq!(read_capped(resp, 1_000_000).await.len(), 100_000);
+        let (body, truncated) = read_capped(resp, 1_000_000).await;
+        assert_eq!((body.len(), truncated), (100_000, false));
     }
 
+    /// Redacts `text` as a body that was cut short at the read cap.
     fn red(text: &str, key: &str) -> String {
-        redact(text.as_bytes(), Some(key))
+        redact(text.as_bytes(), Some(key), true)
     }
 
     #[test]
@@ -539,8 +544,15 @@ mod tests {
         assert_eq!(red("end k", "key"), "end <redacted>");
         assert_eq!(red("end ke", "key"), "end <redacted>");
         assert_eq!(red("end kx", "key"), "end kx");
-        assert_eq!(redact(b"no key", None), "no key");
-        assert_eq!(redact(b"abc", Some("")), "abc");
+        assert_eq!(redact(b"no key", None, true), "no key");
+        assert_eq!(redact(b"abc", Some(""), true), "abc");
+    }
+
+    #[test]
+    fn redact_keeps_a_whole_body_that_merely_ends_like_the_key() {
+        assert_eq!(redact(b"model not found.", Some(".abc"), false), "model not found.");
+        assert_eq!(redact(b"a .abc b .ab", Some(".abc"), false), "a <redacted> b .ab");
+        assert_eq!(redact(b"model not found.", Some(".abc"), true), "model not found<redacted>");
     }
 
     #[test]
@@ -555,7 +567,7 @@ mod tests {
     fn redact_masks_a_multibyte_key_cut_mid_character() {
         let key = "abcdefgh\u{e9}-zz";
         let cut = "x abcdefgh\u{e9}".len() - 1; // inside the two bytes of the e-acute
-        assert_eq!(redact(&"x abcdefgh\u{e9}-zz".as_bytes()[..cut], Some(key)), "x <redacted>");
+        assert_eq!(redact(&"x abcdefgh\u{e9}-zz".as_bytes()[..cut], Some(key), true), "x <redacted>");
     }
 
     #[test]
@@ -574,7 +586,7 @@ mod tests {
                 for suffix in ["", " zz.", " tail"] {
                     let full = format!("{prefix}{key}{suffix}");
                     for cut in 0..=full.len() {
-                        let out = redact(&full.as_bytes()[..cut], Some(key));
+                        let out = redact(&full.as_bytes()[..cut], Some(key), true);
                         for w in &windows {
                             assert!(!out.contains(w), "key {key:?} cut {cut}: {out:?}");
                         }

@@ -418,6 +418,18 @@ async fn load_refusal_never_echoes_the_key_or_credentials() {
 }
 
 #[tokio::test]
+async fn load_refusal_keeps_a_whole_body_that_ends_like_the_key() {
+    let server = MockServer::start().await;
+    Mock::given(path("/upstream/m/"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("model not found."))
+        .mount(&server)
+        .await;
+    mount_running(&server, &[]).await;
+    let client = LlamaSwapClient::new(&server.uri(), Some(".abc".into())).unwrap();
+    assert_eq!(refused(client.load_model("m").await), "model not found.");
+}
+
+#[tokio::test]
 async fn load_refusal_drops_url_queries_and_fragments() {
     let server = MockServer::start().await;
     let body = "see http://example.com/a?token=abc&x=1#frag and https://example.com/b#access_token=t done";
