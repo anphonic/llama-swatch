@@ -82,7 +82,7 @@ pub struct PollData {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PollOutcome {
-    Ok(PollData),
+    Ok(Box<PollData>),
     Unauthorized,
     Unreachable(String),
     Error(String),
@@ -120,12 +120,12 @@ pub async fn poll_once(client: &LlamaSwapClient, want_models: bool, want_version
         Err(ClientError::Unreachable(m)) | Err(ClientError::Redirect(m)) => return PollOutcome::Unreachable(m),
         Err(e) => return PollOutcome::Error(format!("/running: {e}")),
     };
-    PollOutcome::Ok(PollData {
+    PollOutcome::Ok(Box::new(PollData {
         latency,
         running,
         models: best_effort("/v1/models", models),
         version: version.map(version_feature),
         stats: Feature::from_result("/api/metrics/stats", stats),
         activity: Feature::from_result("/api/metrics/activity", activity),
-    })
+    }))
 }
