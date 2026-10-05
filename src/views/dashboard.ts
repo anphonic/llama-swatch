@@ -271,7 +271,7 @@ class CardView {
   }
 }
 
-const LOADED_ONLY_KEY = "llama-swap-monitor.loadedOnly";
+const LOADED_ONLY_KEY = "llama-swatch.loadedOnly";
 
 function readLoadedOnly(): boolean {
   try {
@@ -290,7 +290,7 @@ function writeLoadedOnly(on: boolean) {
 }
 
 type View = "models" | "history";
-const VIEW_KEY = "llama-swap-monitor.view";
+const VIEW_KEY = "llama-swatch.view";
 
 function readView(): View {
   try {

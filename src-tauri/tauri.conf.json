@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "llama-swap Monitor",
+  "productName": "Llama Swatch",
   "version": "0.1.0",
-  "identifier": "dev.llamaswap.monitor",
+  "identifier": "io.github.anphonic.llamaswatch",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "llama-swap Monitor",
+        "title": "Llama Swatch",
         "width": 481,
         "height": 770,
         "center": true,

@@ -1,8 +1,8 @@
-# llama-swap Monitor
+# Llama Swatch
 
-A small desktop app that shows what your [llama-swap](https://github.com/mostlygeek/llama-swap)
-instance is doing: whether it's reachable, which models are loaded, which are busy or stuck,
-and a summary of throughput.
+A desktop monitor for [llama-swap](https://github.com/mostlygeek/llama-swap).
+It shows what your llama-swap instance is doing: whether it's reachable, which models
+are loaded, which are busy or stuck, and a summary of throughput.
 
 Works with llama-swap running anywhere you can reach over HTTP: the same machine, a box
 on your LAN, or behind a reverse proxy.
@@ -103,7 +103,7 @@ These builds are **not code-signed or notarized**, so each OS warns on first lau
 
 - **Windows:** SmartScreen says "Windows protected your PC". Click **More info → Run anyway**.
 - **macOS:** right-click the app → **Open** → **Open**. If macOS says the app is damaged, run
-  `xattr -dr com.apple.quarantine "/Applications/llama-swap Monitor.app"`.
+  `xattr -dr com.apple.quarantine "/Applications/Llama Swatch.app"`.
 - **Linux:** use the `.deb` or `.rpm`, or `chmod +x` the `.AppImage` and run it. The API key is
   stored through the Secret Service (GNOME Keyring or KWallet), so one of those must be running.
 

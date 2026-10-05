@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
-use llama_swap_monitor_lib::events::EventStream;
-use llama_swap_monitor_lib::monitor::{Connection, Snapshot};
-use llama_swap_monitor_lib::runtime::{start, MonitorConfig, SnapshotSink};
-use llama_swap_monitor_lib::state::{ModelState, Thresholds};
+use llama_swatch_lib::events::EventStream;
+use llama_swatch_lib::monitor::{Connection, Snapshot};
+use llama_swatch_lib::runtime::{start, MonitorConfig, SnapshotSink};
+use llama_swatch_lib::state::{ModelState, Thresholds};
 use serde_json::json;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use wiremock::matchers::path;

@@ -1,14 +1,14 @@
 [package]
-name = "llama-swap-monitor"
+name = "llama-swatch"
 version = "0.1.0"
-description = "Desktop monitor for llama-swap"
+description = "A desktop monitor for llama-swap."
 authors = ["anphonic"]
 license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name = "llama_swap_monitor_lib"
+name = "llama_swatch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

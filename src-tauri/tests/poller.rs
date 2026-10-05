@@ -1,12 +1,12 @@
 mod common;
 
 use common::*;
-use llama_swap_monitor_lib::client::LlamaSwapClient;
-use llama_swap_monitor_lib::poller::{poll_once, Feature, PollOutcome};
+use llama_swatch_lib::client::LlamaSwapClient;
+use llama_swatch_lib::poller::{poll_once, Feature, PollOutcome};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn unwrap_ok(o: PollOutcome) -> llama_swap_monitor_lib::poller::PollData {
+fn unwrap_ok(o: PollOutcome) -> llama_swatch_lib::poller::PollData {
     match o {
         PollOutcome::Ok(d) => *d,
         other => panic!("expected Ok, got {other:?}"),
@@ -53,7 +53,7 @@ async fn version_404_is_unavailable_and_500_is_failed() {
     assert_eq!(unwrap_ok(poll_once(&client, false, true).await).version, Some(Feature::Failed));
 }
 
-async fn version_outcome(status: u16) -> Option<Feature<llama_swap_monitor_lib::api::VersionInfo>> {
+async fn version_outcome(status: u16) -> Option<Feature<llama_swatch_lib::api::VersionInfo>> {
     let server = MockServer::start().await;
     mount_healthy(&server).await;
     Mock::given(path("/api/version")).respond_with(ResponseTemplate::new(status)).with_priority(1).mount(&server).await;

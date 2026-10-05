@@ -42,7 +42,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "llama-swap Monitor ${{ github.ref_name }}"
+          releaseName: "Llama Swatch ${{ github.ref_name }}"
           releaseBody: "Unsigned build. See the README for first-launch steps on each OS."
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}

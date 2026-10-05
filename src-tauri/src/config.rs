@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::Thresholds;
 
-pub const KEYRING_SERVICE: &str = "llama-swap-monitor";
+pub const KEYRING_SERVICE: &str = "llama-swatch";
 pub const MIN_POLL_MS: u64 = 500;
 pub const MAX_POLL_MS: u64 = 60_000;
 

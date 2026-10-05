@@ -3,7 +3,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use llama_swap_monitor_lib::client::{test_connection, ClientError, LlamaSwapClient, TestResult};
+use llama_swatch_lib::client::{test_connection, ClientError, LlamaSwapClient, TestResult};
 use wiremock::matchers::{any, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
