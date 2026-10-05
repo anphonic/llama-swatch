@@ -377,11 +377,11 @@ async fn load_is_unconfirmed_when_running_fails() {
 
 #[tokio::test]
 async fn load_is_unconfirmed_when_running_times_out() {
-    // /running uses the 3 s request timeout; answer just after it.
+    // /running uses the 3 s request timeout; the client gives up long before this answer.
     let server = MockServer::start().await;
     Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(404).set_body_string("nope")).mount(&server).await;
     Mock::given(path("/running"))
-        .respond_with(json_body(RUNNING).set_delay(Duration::from_millis(3300)))
+        .respond_with(json_body(RUNNING).set_delay(Duration::from_secs(10)))
         .mount(&server)
         .await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
@@ -418,15 +418,15 @@ async fn load_refusal_never_echoes_the_key_or_credentials() {
 }
 
 #[tokio::test]
-async fn load_refusal_drops_url_query_strings() {
+async fn load_refusal_drops_url_queries_and_fragments() {
     let server = MockServer::start().await;
-    let body = "see http://example.com/a?token=abc&x=1#frag and https://example.com/b?k=v done";
+    let body = "see http://example.com/a?token=abc&x=1#frag and https://example.com/b#access_token=t done";
     Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(409).set_body_string(body)).mount(&server).await;
     mount_running(&server, &[]).await;
     let client = LlamaSwapClient::new(&server.uri(), None).unwrap();
     assert_eq!(
         refused(client.load_model("m").await),
-        "see http://example.com/a#frag and https://example.com/b done"
+        "see http://example.com/a and https://example.com/b done"
     );
 }
 
@@ -443,6 +443,26 @@ async fn load_refusal_never_leaks_a_key_cut_at_the_body_cap() {
         let msg = refused(client.load_model("m").await);
         assert!(!msg.contains('s'), "start {start}: {msg}"); // no part of the key, however short
     }
+    // A bordered key (starts and ends with "k3y") that the body ends with exactly.
+    let key = "k3y-abc-k3y";
+    for start in [4090, 4092, 4095, 4096, 4100] {
+        let server = MockServer::start().await;
+        let body = format!("{}{key}", " ".repeat(start));
+        Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(409).set_body_string(body)).mount(&server).await;
+        mount_running(&server, &[]).await;
+        let client = LlamaSwapClient::new(&server.uri(), Some(key.into())).unwrap();
+        let msg = refused(client.load_model("m").await);
+        assert!(!msg.contains('k') && !msg.contains("3y"), "start {start}: {msg}");
+    }
+    // A key longer than the read-ahead past the cap is cut, and its read part still never shows.
+    let key: String = (0..400).map(|i| b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i * 7 % 36] as char).collect();
+    let server = MockServer::start().await;
+    let body = format!("{}{key} tail", " ".repeat(4000));
+    Mock::given(path("/upstream/m/")).respond_with(ResponseTemplate::new(409).set_body_string(body)).mount(&server).await;
+    mount_running(&server, &[]).await;
+    let client = LlamaSwapClient::new(&server.uri(), Some(key.clone())).unwrap();
+    let msg = refused(client.load_model("m").await);
+    assert_eq!(msg, "<redacted>");
 }
 
 #[tokio::test]

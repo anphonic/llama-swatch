@@ -14,9 +14,11 @@ use crate::api::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 /// `GET /upstream/{model}/` blocks until the model is up, which can take minutes.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
-/// Most bytes of a refusal body read when a load is answered with a 4xx.
+/// At most 4096 bytes of a refusal body are read when a load is answered with a 4xx.
 const REFUSAL_BODY_CAP: usize = 4096;
-/// Most characters of llama-swap's refusal text shown to the user.
+/// At most 256 bytes are read past the cap so a key straddling it can be redacted whole.
+const REFUSAL_KEY_READ_AHEAD: usize = 256;
+/// At most 200 characters of llama-swap's refusal text are shown to the user.
 const REFUSAL_REASON_CHARS: usize = 200;
 /// Unloading waits for the upstream process to stop.
 const UNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -198,9 +200,11 @@ impl LlamaSwapClient {
         if !status.is_client_error() || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             return Self::check(resp).map(drop);
         }
-        // Read past the cap by the key's length so a key straddling the cap is redacted whole.
+        // Read a little past the cap so a key straddling it is redacted whole; a longer key cut
+        // at the end is still masked by `redact`'s trailing-prefix check.
         let key = self.key.as_deref();
-        let body = read_capped(resp, REFUSAL_BODY_CAP + key.map_or(0, str::len)).await;
+        let ahead = key.map_or(0, |k| k.len().min(REFUSAL_KEY_READ_AHEAD));
+        let body = read_capped(resp, REFUSAL_BODY_CAP + ahead).await;
         let reason = sanitize_reason(&redact(&body, key));
         let code = status.as_u16();
         match self.running().await {
@@ -232,8 +236,8 @@ impl LlamaSwapClient {
     }
 }
 
-/// At most `cap` bytes of the body, decoded lossily; a read error ends the body early.
-async fn read_capped(mut resp: Response, cap: usize) -> String {
+/// At most `cap` bytes of the body; a read error ends the body early.
+async fn read_capped(mut resp: Response, cap: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     while buf.len() < cap {
         match resp.chunk().await {
@@ -241,24 +245,38 @@ async fn read_capped(mut resp: Response, cap: usize) -> String {
             _ => break,
         }
     }
-    String::from_utf8_lossy(&buf).into_owned()
+    buf
 }
 
-/// Server text with the API key, any `user:password@` and any `?query` in a URL removed. A
-/// trailing part of `text` that could be the start of the key (cut off by a read cap) is dropped.
-fn redact(text: &str, key: Option<&str>) -> String {
-    let mut out = match key {
-        Some(k) => {
-            // Longest proper prefix of the key that the text ends with.
-            let cut = (1..k.len().min(text.len() + 1))
-                .rev()
-                .map(|n| text.len() - n)
-                .find(|&at| text.is_char_boundary(at) && k.as_bytes().starts_with(&text.as_bytes()[at..]))
-                .unwrap_or(text.len());
-            text[..cut].replace(k, "<redacted>")
+/// Server bytes as text with the API key, any `user:password@` and any `?query`/`#fragment` in a
+/// URL removed. Every byte covered by an occurrence of the key (overlapping ones included) and a
+/// trailing part that could be the start of a key cut off by a read cap is masked on the raw
+/// bytes, before decoding, so a multibyte key cut mid-character is caught too. Each masked run
+/// becomes `<redacted>`.
+fn redact(body: &[u8], key: Option<&str>) -> String {
+    let mut masked = vec![false; body.len()];
+    if let Some(k) = key.map(str::as_bytes).filter(|k| !k.is_empty()) {
+        for i in 0..body.len() {
+            if body[i..].starts_with(k) {
+                masked[i..i + k.len()].fill(true);
+            }
         }
-        None => text.to_string(),
-    };
+        // Longest proper prefix of the key that the body ends with.
+        let mut tail = (1..k.len().min(body.len() + 1)).rev().map(|n| body.len() - n);
+        if let Some(at) = tail.find(|&at| k.starts_with(&body[at..])) {
+            masked[at..].fill(true);
+        }
+    }
+    let mut bytes = Vec::with_capacity(body.len());
+    for (i, &b) in body.iter().enumerate() {
+        if !masked[i] {
+            bytes.push(b);
+        } else if i == 0 || !masked[i - 1] {
+            bytes.extend_from_slice(b"<redacted>");
+        }
+    }
+    let mut out = String::from_utf8_lossy(&bytes).into_owned();
+    // Only URLs with a scheme (`x://`) are recognized; a bare `host/path?q` is left as is.
     let mut from = 0;
     while let Some(i) = out[from..].find("://") {
         let host = from + i + 3;
@@ -269,9 +287,8 @@ fn redact(text: &str, key: Option<&str>) -> String {
             out.replace_range(host..host + at + 1, "");
             continue;
         }
-        if let Some(q) = rest[..url_end].find('?') {
-            let q_end = rest[q..url_end].find('#').map_or(url_end, |f| q + f);
-            out.replace_range(host + q..host + q_end, "");
+        if let Some(q) = rest[..url_end].find(['?', '#']) {
+            out.replace_range(host + q..host + url_end, "");
         }
         from = host;
     }
@@ -507,17 +524,64 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(any()).respond_with(ResponseTemplate::new(409).set_body_string("y".repeat(100_000))).mount(&server).await;
         let resp = reqwest::get(server.uri()).await.unwrap();
-        assert_eq!(read_capped(resp, REFUSAL_BODY_CAP).await.len(), REFUSAL_BODY_CAP);
+        assert_eq!(read_capped(resp, REFUSAL_BODY_CAP).await.len(), REFUSAL_BODY_CAP); // at most 4096
         let resp = reqwest::get(server.uri()).await.unwrap();
         assert_eq!(read_capped(resp, 1_000_000).await.len(), 100_000);
     }
 
+    fn red(text: &str, key: &str) -> String {
+        redact(text.as_bytes(), Some(key))
+    }
+
     #[test]
-    fn redact_drops_a_trailing_key_prefix() {
-        assert_eq!(redact("a k1 b k1", Some("k1")), "a <redacted> b <redacted>");
-        assert_eq!(redact("end k", Some("key")), "end ");
-        assert_eq!(redact("end ke", Some("key")), "end ");
-        assert_eq!(redact("end kx", Some("key")), "end kx");
+    fn redact_masks_whole_and_trailing_partial_keys() {
+        assert_eq!(red("a k1 b k1", "k1"), "a <redacted> b <redacted>");
+        assert_eq!(red("end k", "key"), "end <redacted>");
+        assert_eq!(red("end ke", "key"), "end <redacted>");
+        assert_eq!(red("end kx", "key"), "end kx");
+        assert_eq!(redact(b"no key", None), "no key");
+        assert_eq!(redact(b"abc", Some("")), "abc");
+    }
+
+    #[test]
+    fn redact_masks_bordered_keys_at_the_end() {
+        // Regression: stripping a trailing prefix before replacing broke the full-key match.
+        assert_eq!(red("x abca", "abca"), "x <redacted>");
+        assert_eq!(red("bad key: abcdabcd", "abcdabcd"), "bad key: <redacted>");
+        assert_eq!(red("bad key: xA1b2C3d4E5x", "xA1b2C3d4E5x"), "bad key: <redacted>");
+    }
+
+    #[test]
+    fn redact_masks_a_multibyte_key_cut_mid_character() {
+        let key = "abcdefgh\u{e9}-zz";
+        let cut = "x abcdefgh\u{e9}".len() - 1; // inside the two bytes of the e-acute
+        assert_eq!(redact(&"x abcdefgh\u{e9}-zz".as_bytes()[..cut], Some(key)), "x <redacted>");
+    }
+
+    #[test]
+    fn redact_never_leaves_four_bytes_of_the_key_at_any_cut() {
+        // Longer than REFUSAL_KEY_READ_AHEAD, so it can be cut anywhere by the read cap.
+        let long: String = (0..300).map(|i| b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i * 7 % 36] as char).collect();
+        let keys = ["xA1b2C3d4E5x", "abcdabcd", "aaaa1aaaa", "abca", "s3cret-key-0123456789", "abcdefgh\u{e9}-zz", &long];
+        for key in keys {
+            // Any leaked run of 4+ bytes contains a shortest char-aligned window of 4+ bytes.
+            let bounds: Vec<usize> = key.char_indices().map(|(i, _)| i).chain([key.len()]).collect();
+            let windows: Vec<&str> = bounds
+                .iter()
+                .filter_map(|&a| bounds.iter().find(|&&b| b >= a + 4).map(|&b| &key[a..b]))
+                .collect();
+            for prefix in ["", "bad: ", "<<"] {
+                for suffix in ["", " zz.", " tail"] {
+                    let full = format!("{prefix}{key}{suffix}");
+                    for cut in 0..=full.len() {
+                        let out = redact(&full.as_bytes()[..cut], Some(key));
+                        for w in &windows {
+                            assert!(!out.contains(w), "key {key:?} cut {cut}: {out:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
