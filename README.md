@@ -1,6 +1,6 @@
-<p align="center">
+<h1 align="center">
   <img src="docs/images/banner.png" alt="Llama Swatch: a desktop monitor for llama-swap" width="800">
-</p>
+</h1>
 
 A desktop monitor for [llama-swap](https://github.com/mostlygeek/llama-swap).
 It shows what your llama-swap instance is doing: whether it's reachable, which models
