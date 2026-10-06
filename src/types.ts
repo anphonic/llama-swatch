@@ -93,7 +93,14 @@ export interface Settings {
   pollIntervalMs: number;
   thresholds: Thresholds;
   alwaysOnTop: boolean;
+  theme: Theme;
 }
+
+/** "system" follows the OS (on Linux via the desktop portal, see `systemColorScheme`). */
+export type Theme = "system" | "light" | "dark";
+
+/** The desktop's preference as the backend reads it; "unknown" outside Linux. */
+export type ColorScheme = "light" | "dark" | "unknown";
 
 export interface SettingsView {
   configured: boolean;

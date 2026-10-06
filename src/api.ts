@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ActivityRow, Settings, SettingsView, Snapshot, TestResult } from "./types";
+import type { ActivityRow, ColorScheme, Settings, SettingsView, Snapshot, TestResult } from "./types";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
 
@@ -28,3 +28,9 @@ export const unloadModel = (id: string) => invoke<void>("unload_model", { id });
 
 export const onSnapshot = (cb: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("snapshot", (e) => cb(e.payload));
+
+export const systemColorScheme = () => invoke<ColorScheme>("system_color_scheme");
+
+/** Fires when the Linux desktop's dark-style setting changes. */
+export const onColorScheme = (cb: (s: ColorScheme) => void): Promise<UnlistenFn> =>
+  listen<ColorScheme>("color-scheme", (e) => cb(e.payload));

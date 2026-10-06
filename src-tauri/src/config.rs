@@ -32,11 +32,40 @@ pub struct Settings {
     pub thresholds: Thresholds,
     /// Keep the window above other windows. Applied at startup and by the header pin button.
     pub always_on_top: bool,
+    /// Colour scheme chosen in settings. `System` follows the OS.
+    pub theme: Theme,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { base_url: "http://localhost:8080".into(), poll_interval_ms: 2000, thresholds: Thresholds::default(), always_on_top: false }
+        Self {
+            base_url: "http://localhost:8080".into(),
+            poll_interval_ms: 2000,
+            thresholds: Thresholds::default(),
+            always_on_top: false,
+            theme: Theme::System,
+        }
+    }
+}
+
+/// Read from a plain string so an unknown value (hand edit, newer version) falls back to `System`
+/// instead of making the whole settings file unreadable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", from = "String")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl From<String> for Theme {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "light" => Theme::Light,
+            "dark" => Theme::Dark,
+            _ => Theme::System,
+        }
     }
 }
 
@@ -277,7 +306,7 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
-        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true };
+        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, theme: Theme::Dark };
         save_settings(&path, &s).unwrap();
         assert_eq!(load_settings(&path), Some(s));
         assert!(!path.with_extension("json.tmp").exists(), "temp file is renamed away");
@@ -304,6 +333,19 @@ mod tests {
         assert_eq!(s.poll_interval_ms, 2000);
         assert_eq!(s.thresholds, Thresholds::default());
         assert!(!s.always_on_top, "old settings files default to not pinned");
+        assert_eq!(s.theme, Theme::System, "old settings files follow the OS theme");
+    }
+
+    #[test]
+    fn theme_is_lowercase_and_unknown_values_fall_back_to_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for (json, want) in [("light", Theme::Light), ("dark", Theme::Dark), ("system", Theme::System), ("Dark", Theme::System), ("sepia", Theme::System)] {
+            std::fs::write(&path, format!(r#"{{"baseUrl":"box:9000","theme":"{json}"}}"#)).unwrap();
+            assert_eq!(load_settings(&path).unwrap().theme, want, "{json}");
+        }
+        save_settings(&path, &Settings { theme: Theme::Dark, ..Default::default() }).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"theme\": \"dark\""));
     }
 
     #[test]
