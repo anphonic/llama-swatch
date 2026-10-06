@@ -17,6 +17,9 @@ export const isSavedUrl = (baseUrl: string) => invoke<boolean>("is_saved_url", {
 /** Remembers the pin button's state; the window itself is changed with `setAlwaysOnTop`. */
 export const setAlwaysOnTopSetting = (on: boolean) => invoke<void>("set_always_on_top", { on });
 
+/** Records the answer to the dashboard's one-time update-check notice. */
+export const setCheckForUpdatesSetting = (on: boolean) => invoke<void>("set_check_for_updates", { on });
+
 export const getSnapshot = () => invoke<Snapshot | null>("get_snapshot");
 
 export const getActivity = (limit: number) => invoke<ActivityRow[]>("get_activity", { limit });

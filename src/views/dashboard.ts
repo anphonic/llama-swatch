@@ -3,7 +3,7 @@ import { formatAgo, formatCount, formatDuration } from "../format";
 import { countLoaded, isLoaded } from "../models";
 import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot, UpdateInfo } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadModel, openRelease, setAlwaysOnTopSetting, unloadModel } from "../api";
+import { loadModel, openRelease, setAlwaysOnTopSetting, setCheckForUpdatesSetting, unloadModel } from "../api";
 import { renderHistogram } from "./components/histogram";
 import { createRing, type Ring } from "./components/ring";
 import { renderSparkline } from "./components/sparkline";
@@ -377,6 +377,23 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
 
   const toast = h("div", { class: "toast", role: "status" });
   toast.hidden = true;
+  // Shown once to someone upgrading from a version without the setting: the check is already on.
+  const keepChecking = h("button", { type: "button" }, "Keep on");
+  const stopChecking = h("button", { type: "button" }, "Turn off");
+  const checkNotice = h(
+    "div",
+    { class: "banner banner-info", role: "status" },
+    h("span", {}, "Llama Swatch now checks GitHub for a new release at startup. GitHub sees only your IP address and the app version."),
+    h("span", { class: "banner-actions" }, keepChecking, stopChecking),
+  );
+  checkNotice.hidden = settings.checkForUpdates !== null;
+  const answerCheck = (on: boolean) => {
+    checkNotice.hidden = true;
+    if (!on) updateBadge.hidden = true;
+    setCheckForUpdatesSetting(on).catch((e) => showToast(`Could not save the update setting: ${String(e)}`));
+  };
+  keepChecking.addEventListener("click", () => answerCheck(true));
+  stopChecking.addEventListener("click", () => answerCheck(false));
   const grid = h("section", { class: "grid" });
   const empty = h("p", { class: "empty" }, "No models reported yet.");
   const tiles = {
@@ -396,7 +413,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const history = createHistory();
   // Banner and toast overlay the bottom of the window instead of sitting in
   // the flow, so showing or hiding them never pushes content down.
-  const notices = h("div", { class: "notices" }, banner, toast);
+  const notices = h("div", { class: "notices" }, checkNotice, banner, toast);
   // Keep the page's bottom padding equal to the overlay's height so the last card / History row
   // can always be scrolled fully clear of it. Also publish the scrollbar width (see styles.css).
   const syncOverlay = () => {

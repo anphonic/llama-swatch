@@ -113,6 +113,11 @@ input, .field select {
   border-color: color-mix(in srgb, var(--red) 40%, transparent);
 }
 .banner[hidden] { display: none; }
+.banner-info {
+  background: color-mix(in srgb, var(--blue) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--blue) 40%, transparent);
+}
+.banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
 /* ---- toolbar ---- */
 .toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 12px; height: 32px; }

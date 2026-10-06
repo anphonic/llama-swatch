@@ -93,7 +93,7 @@ export interface Settings {
   pollIntervalMs: number;
   thresholds: Thresholds;
   alwaysOnTop: boolean;
-  /** null: never answered (settings from an older version); treated as off until saved. */
+  /** null: never answered (settings from an older version); checks, and the dashboard asks once. */
   checkForUpdates: boolean | null;
   theme: Theme;
 }

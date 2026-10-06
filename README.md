@@ -143,11 +143,11 @@ The API key is optional: you only need one if your llama-swap config sets `apiKe
    the key again.
 
 **Check GitHub for a new release at startup** is ticked by default in settings. Once per
-launch, and only after you have saved settings with it ticked, the app makes one request to
+launch, once a connection has been saved and unless you've unticked it, the app makes one request to
 `api.github.com` for this repository's latest release tag. GitHub sees your IP address and
 the app version (in the User-Agent); nothing about your llama-swap is sent. Untick it to turn
-the check off. If you upgraded from a version without this setting, nothing is checked until
-you open settings and save.
+the check off. If you upgraded from a version without this setting, the check is on and the
+window says so once, with buttons to keep it on or turn it off.
 
 Thresholds (slow-load warning, no-first-byte timeout, and so on) are under
 **Stall detection** in settings. The no-first-byte timeout marks a model Stalled only when a

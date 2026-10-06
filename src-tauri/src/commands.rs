@@ -213,6 +213,12 @@ pub async fn system_color_scheme() -> crate::theme::Scheme {
     tauri::async_runtime::spawn_blocking(crate::theme::current).await.unwrap_or(crate::theme::Scheme::Unknown)
 }
 
+/// Records the answer to the dashboard's one-time "this version checks for updates" notice.
+#[tauri::command]
+pub fn set_check_for_updates(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    config::save_check_for_updates(&state.config_path, on).map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// INVARIANT: every command that takes the `latest` lock must be `async`. `publish_if_current`
 /// emits under that lock, and with Tauri's `tracing` feature `emit` blocks until the main
 /// thread services it; a sync command runs on the main thread and would deadlock waiting for
@@ -266,12 +272,12 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<Option<Snapshot>
     Ok(state.latest.lock().expect("latest poisoned").clone())
 }
 
-/// Asks GitHub whether a newer release exists. Sends nothing unless the settings form has been
-/// saved with "Check for updates" on, so neither a first launch nor an upgrade from a version
-/// without the setting contacts GitHub before the user could turn it off.
+/// Asks GitHub whether a newer release exists. Sends nothing before a connection has been saved
+/// (a first launch) or once the user has turned the check off. An upgrade from a version without
+/// the setting (`None`) checks; the dashboard tells that user once and records their answer.
 #[tauri::command]
 pub async fn check_for_update(state: State<'_, AppState>) -> Result<Option<UpdateInfo>, String> {
-    if !load_settings(&state.config_path).is_some_and(|s| s.check_for_updates == Some(true)) {
+    if !load_settings(&state.config_path).is_some_and(|s| s.check_for_updates != Some(false)) {
         return Ok(None);
     }
     update::check(update::GITHUB_API, env!("CARGO_PKG_VERSION")).await
