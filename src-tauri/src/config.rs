@@ -33,7 +33,7 @@ pub struct Settings {
     /// Keep the window above other windows. Applied at startup and by the header pin button.
     pub always_on_top: bool,
     /// Ask GitHub once per launch whether a newer release exists. `None` = never answered (a file
-    /// from before the setting existed): no check until the settings form has been saved.
+    /// from before the setting existed): the check runs, and the dashboard says so once and asks.
     pub check_for_updates: Option<bool>,
     /// Colour scheme chosen in settings. `System` follows the OS.
     #[serde(deserialize_with = "lenient_theme")]
@@ -166,6 +166,15 @@ pub fn save_always_on_top(path: &Path, on: bool) -> Result<bool, ConfigError> {
     match load_settings(path) {
         Some(s) if s.always_on_top == on => Ok(true),
         Some(s) => save_settings(path, &Settings { always_on_top: on, ..s }).map(|()| true),
+        None => Ok(false),
+    }
+}
+
+/// Persists only the update-check answer, like `save_always_on_top`.
+pub fn save_check_for_updates(path: &Path, on: bool) -> Result<bool, ConfigError> {
+    match load_settings(path) {
+        Some(s) if s.check_for_updates == Some(on) => Ok(true),
+        Some(s) => save_settings(path, &Settings { check_for_updates: Some(on), ..s }).map(|()| true),
         None => Ok(false),
     }
 }
@@ -392,6 +401,23 @@ mod tests {
         assert_eq!((s.base_url.as_str(), s.poll_interval_ms), ("http://box:9000", 3000));
         assert!(save_always_on_top(&path, false).unwrap());
         assert!(!load_settings(&path).unwrap().always_on_top);
+    }
+
+    #[test]
+    fn save_check_for_updates_updates_only_that_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert!(!save_check_for_updates(&path, false).unwrap(), "unconfigured: nothing written");
+        assert!(!path.exists());
+        std::fs::write(&path, r#"{"baseUrl":"box:9000","alwaysOnTop":true}"#).unwrap();
+        assert_eq!(load_settings(&path).unwrap().check_for_updates, None);
+        assert!(save_check_for_updates(&path, false).unwrap());
+        let s = load_settings(&path).unwrap();
+        assert_eq!(s.check_for_updates, Some(false));
+        assert!(s.always_on_top);
+        assert_eq!(s.base_url, "http://box:9000");
+        assert!(save_check_for_updates(&path, true).unwrap());
+        assert_eq!(load_settings(&path).unwrap().check_for_updates, Some(true));
     }
 
     #[test]

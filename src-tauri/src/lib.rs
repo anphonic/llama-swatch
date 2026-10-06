@@ -64,6 +64,7 @@ pub fn run() {
             commands::load_model,
             commands::unload_model,
             commands::set_always_on_top,
+            commands::set_check_for_updates,
             commands::check_for_update,
             commands::open_release,
             commands::system_color_scheme

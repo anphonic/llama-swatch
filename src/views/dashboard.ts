@@ -3,7 +3,7 @@ import { formatAgo, formatCount, formatDuration } from "../format";
 import { countLoaded, isLoaded } from "../models";
 import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot, UpdateInfo } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadModel, openRelease, setAlwaysOnTopSetting, unloadModel } from "../api";
+import { loadModel, openRelease, setAlwaysOnTopSetting, setCheckForUpdatesSetting, unloadModel } from "../api";
 import { renderHistogram } from "./components/histogram";
 import { createRing, type Ring } from "./components/ring";
 import { renderSparkline } from "./components/sparkline";
@@ -310,6 +310,13 @@ function writeView(v: View) {
   }
 }
 
+/**
+ * The answer to the update-check notice, for the rest of this launch. Kept outside any one
+ * dashboard: one is rebuilt after Settings closes, and if the answer couldn't be saved the
+ * settings still say "never answered".
+ */
+let checkAnswer: boolean | null = null;
+
 export function createDashboard(settings: Settings, onOpenSettings: () => void): Dashboard {
   const dot = h("span", { class: "dot" });
   const statusText = h("span", { class: "status-text" }, "Connecting…");
@@ -321,7 +328,10 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const updateBadge = h("button", { type: "button", class: "badge badge-update" });
   updateBadge.hidden = true;
   const gear = h("button", { type: "button", class: "icon-button", "aria-label": "Settings", title: "Settings" }, "⚙");
-  gear.addEventListener("click", onOpenSettings);
+  /** The notice's answer, while it is being saved: settings must not open on the old value. */
+  let answerSaving: Promise<unknown> = Promise.resolve();
+  const openSettingsWhenSaved = () => void answerSaving.then(onOpenSettings);
+  gear.addEventListener("click", openSettingsWhenSaved);
   let pinned = settings.alwaysOnTop;
   const pin = h("button", { type: "button", class: "icon-button pin" });
   pin.append(pinIcon());
@@ -357,7 +367,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const banner = h("div", { class: "banner" });
   banner.hidden = true;
   const openSettings = h("button", { type: "button" }, "Open settings");
-  openSettings.addEventListener("click", onOpenSettings);
+  openSettings.addEventListener("click", openSettingsWhenSaved);
 
   let loadedOnly = readLoadedOnly();
   const loadedOnlyBox = h("input", { type: "checkbox", id: "loaded-only" });
@@ -377,6 +387,27 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
 
   const toast = h("div", { class: "toast", role: "status" });
   toast.hidden = true;
+  // Shown once to someone upgrading from a version without the setting: the check is already on.
+  const keepChecking = h("button", { type: "button" }, "Keep on");
+  const stopChecking = h("button", { type: "button" }, "Turn off");
+  const checkNotice = h(
+    "div",
+    { class: "banner banner-info", role: "region", "aria-label": "Update check" },
+    h("span", {}, "Llama Swatch now checks GitHub for a new release at startup. GitHub sees only your IP address and the app version."),
+    h("span", { class: "banner-actions" }, keepChecking, stopChecking),
+  );
+  checkNotice.hidden = settings.checkForUpdates !== null || checkAnswer !== null;
+  const answerCheck = (on: boolean) => {
+    checkNotice.hidden = true;
+    gear.focus(); // the focused button just disappeared
+    checkAnswer = on;
+    if (!on) updateBadge.hidden = true;
+    answerSaving = setCheckForUpdatesSetting(on).catch((e) =>
+      showToast(`Could not save the update setting (you'll be asked again next launch): ${String(e)}`),
+    );
+  };
+  keepChecking.addEventListener("click", () => answerCheck(true));
+  stopChecking.addEventListener("click", () => answerCheck(false));
   const grid = h("section", { class: "grid" });
   const empty = h("p", { class: "empty" }, "No models reported yet.");
   const tiles = {
@@ -396,7 +427,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const history = createHistory();
   // Banner and toast overlay the bottom of the window instead of sitting in
   // the flow, so showing or hiding them never pushes content down.
-  const notices = h("div", { class: "notices" }, banner, toast);
+  const notices = h("div", { class: "notices" }, checkNotice, banner, toast);
   // Keep the page's bottom padding equal to the overlay's height so the last card / History row
   // can always be scrolled fully clear of it. Also publish the scrollbar width (see styles.css).
   const syncOverlay = () => {
@@ -591,6 +622,9 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   return {
     element,
     showUpdate(u) {
+      // "Turn off" this launch, not yet overridden from Settings: a check already in flight
+      // must not show its badge afterwards.
+      if (settings.checkForUpdates === null && checkAnswer === false) return;
       updateBadge.textContent = `${u.tag} available`;
       updateBadge.title = `Open the ${u.tag} release page on GitHub`;
       updateBadge.hidden = false;

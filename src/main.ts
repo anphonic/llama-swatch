@@ -32,7 +32,8 @@ async function showDashboard(view: SettingsView) {
   });
   dashboard = current;
   root.replaceChildren(current.element);
-  if (view.settings.checkForUpdates === true) {
+  // null = upgraded from a version without the setting: check, and the dashboard says so once.
+  if (view.settings.checkForUpdates !== false) {
     updateCheck ??= checkForUpdate().catch((e) => {
       console.warn("update check failed:", String(e));
       return null;
