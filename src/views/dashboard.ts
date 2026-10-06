@@ -321,7 +321,10 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const updateBadge = h("button", { type: "button", class: "badge badge-update" });
   updateBadge.hidden = true;
   const gear = h("button", { type: "button", class: "icon-button", "aria-label": "Settings", title: "Settings" }, "⚙");
-  gear.addEventListener("click", onOpenSettings);
+  /** The notice's answer, while it is being saved: settings must not open on the old value. */
+  let answerSaving: Promise<unknown> = Promise.resolve();
+  const openSettingsWhenSaved = () => void answerSaving.then(onOpenSettings);
+  gear.addEventListener("click", openSettingsWhenSaved);
   let pinned = settings.alwaysOnTop;
   const pin = h("button", { type: "button", class: "icon-button pin" });
   pin.append(pinIcon());
@@ -357,7 +360,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const banner = h("div", { class: "banner" });
   banner.hidden = true;
   const openSettings = h("button", { type: "button" }, "Open settings");
-  openSettings.addEventListener("click", onOpenSettings);
+  openSettings.addEventListener("click", openSettingsWhenSaved);
 
   let loadedOnly = readLoadedOnly();
   const loadedOnlyBox = h("input", { type: "checkbox", id: "loaded-only" });
@@ -382,7 +385,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const stopChecking = h("button", { type: "button" }, "Turn off");
   const checkNotice = h(
     "div",
-    { class: "banner banner-info", role: "status" },
+    { class: "banner banner-info", role: "region", "aria-label": "Update check" },
     h("span", {}, "Llama Swatch now checks GitHub for a new release at startup. GitHub sees only your IP address and the app version."),
     h("span", { class: "banner-actions" }, keepChecking, stopChecking),
   );
@@ -391,11 +394,12 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   let checkTurnedOff = false;
   const answerCheck = (on: boolean) => {
     checkNotice.hidden = true;
+    gear.focus(); // the focused button just disappeared
     if (!on) {
       checkTurnedOff = true;
       updateBadge.hidden = true;
     }
-    setCheckForUpdatesSetting(on).catch((e) =>
+    answerSaving = setCheckForUpdatesSetting(on).catch((e) =>
       showToast(`Could not save the update setting (you'll be asked again next launch): ${String(e)}`),
     );
   };

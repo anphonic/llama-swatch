@@ -216,7 +216,11 @@ pub async fn system_color_scheme() -> crate::theme::Scheme {
 /// Records the answer to the dashboard's one-time "this version checks for updates" notice.
 #[tauri::command]
 pub fn set_check_for_updates(state: State<'_, AppState>, on: bool) -> Result<(), String> {
-    config::save_check_for_updates(&state.config_path, on).map(|_| ()).map_err(|e| e.to_string())
+    match config::save_check_for_updates(&state.config_path, on) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("the settings file could not be read".into()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// INVARIANT: every command that takes the `latest` lock must be `async`. `publish_if_current`
