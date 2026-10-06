@@ -15,6 +15,12 @@ release outside that range.
 Llama Swatch is an independent project. It is not affiliated with or endorsed by llama-swap
 or its maintainers.
 
+<p align="center">
+  <img src="docs/images/screenshot-models.png" alt="Models view: one busy model streaming, two idle models with unload timers, one loading, and two not loaded" width="300">
+  <img src="docs/images/screenshot-history.png" alt="History view: recent requests with mode, status, token counts, tok/s and duration, with model swaps highlighted" width="540">
+</p>
+<p align="center"><sub>Screenshots use made-up data.</sub></p>
+
 ## What the states mean
 
 | State | Looks like | Meaning |
