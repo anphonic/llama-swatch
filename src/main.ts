@@ -12,14 +12,11 @@ function showSetup(view: SettingsView) {
   dashboard?.destroy();
   dashboard = null;
   const cancel = view.configured ? () => void showDashboard(view) : undefined;
-  root.replaceChildren(renderSetup(
-      view,
-      (saved) => {
-        applyTheme(saved.settings.theme);
-        void showDashboard(saved);
-      },
-      cancel,
-    ),);
+  const onSaved = (saved: SettingsView) => {
+    applyTheme(saved.settings.theme);
+    void showDashboard(saved);
+  };
+  root.replaceChildren(renderSetup(view, onSaved, cancel));
 }
 
 async function showDashboard(view: SettingsView) {

@@ -19,15 +19,27 @@ function render() {
     .catch((e) => console.error("setTheme failed:", String(e)));
 }
 
-/** Call once at startup, before the first render. */
+/**
+ * Call once at startup. Applies the saved choice right away; the desktop query can take a moment
+ * on Linux (D-Bus, gsettings), so it is not awaited and recolours the page when it answers.
+ */
 export async function initTheme(setting: Theme) {
   chosen = setting;
+  render();
+  let gotEvent = false;
   await onColorScheme((s) => {
+    gotEvent = true;
     desktop = s;
     render();
   }).catch((e) => console.error("color-scheme listener failed:", String(e)));
-  desktop = await systemColorScheme().catch((): ColorScheme => "unknown");
-  render();
+  void systemColorScheme()
+    .catch((): ColorScheme => "unknown")
+    .then((s) => {
+      // A change event that arrived meanwhile is newer than this answer.
+      if (gotEvent) return;
+      desktop = s;
+      render();
+    });
 }
 
 /** Call after settings are saved. */

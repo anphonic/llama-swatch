@@ -33,6 +33,7 @@ pub struct Settings {
     /// Keep the window above other windows. Applied at startup and by the header pin button.
     pub always_on_top: bool,
     /// Colour scheme chosen in settings. `System` follows the OS.
+    #[serde(deserialize_with = "lenient_theme")]
     pub theme: Theme,
 }
 
@@ -48,10 +49,8 @@ impl Default for Settings {
     }
 }
 
-/// Read from a plain string so an unknown value (hand edit, newer version) falls back to `System`
-/// instead of making the whole settings file unreadable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", from = "String")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Theme {
     #[default]
     System,
@@ -59,14 +58,14 @@ pub enum Theme {
     Dark,
 }
 
-impl From<String> for Theme {
-    fn from(s: String) -> Self {
-        match s.as_str() {
-            "light" => Theme::Light,
-            "dark" => Theme::Dark,
-            _ => Theme::System,
-        }
-    }
+/// Any value other than "light" or "dark" (hand edit, null, newer version) reads as `System`
+/// instead of making the whole settings file unreadable.
+fn lenient_theme<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Theme, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)?.as_str() {
+        Some("light") => Theme::Light,
+        Some("dark") => Theme::Dark,
+        _ => Theme::System,
+    })
 }
 
 impl Settings {
@@ -343,6 +342,10 @@ mod tests {
         for (json, want) in [("light", Theme::Light), ("dark", Theme::Dark), ("system", Theme::System), ("Dark", Theme::System), ("sepia", Theme::System)] {
             std::fs::write(&path, format!(r#"{{"baseUrl":"box:9000","theme":"{json}"}}"#)).unwrap();
             assert_eq!(load_settings(&path).unwrap().theme, want, "{json}");
+        }
+        for json in ["null", "1", "{}", "[\"dark\"]"] {
+            std::fs::write(&path, format!(r#"{{"baseUrl":"box:9000","theme":{json}}}"#)).unwrap();
+            assert_eq!(load_settings(&path).map(|s| s.theme), Some(Theme::System), "{json}");
         }
         save_settings(&path, &Settings { theme: Theme::Dark, ..Default::default() }).unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().contains("\"theme\": \"dark\""));

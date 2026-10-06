@@ -75,7 +75,14 @@ mod linux {
         let proxy = conn.with_proxy(DEST, PATH, TIMEOUT);
         let (v,): (Variant<Box<dyn RefArg>>,) = proxy
             .method_call(IFACE, "ReadOne", (NS, KEY))
-            .or_else(|_| proxy.method_call(IFACE, "Read", (NS, KEY)))
+            // Portals older than v2 have only `Read`; any other error (e.g. a timeout) is final.
+            .or_else(|e| {
+                if e.name() == Some("org.freedesktop.DBus.Error.UnknownMethod") {
+                    proxy.method_call(IFACE, "Read", (NS, KEY))
+                } else {
+                    Err(e)
+                }
+            })
             .ok()?;
         as_u32(&v.0)
     }
