@@ -177,12 +177,20 @@ mod tests {
         Mock::given(path(LATEST)).respond_with(ResponseTemplate::new(403)).mount(&server).await;
         assert!(check(&server.uri(), "0.1.0").await.unwrap_err().contains("403"));
 
+        // The redirect target would answer with a valid newer release; it must never be asked.
+        let target = MockServer::start().await;
+        Mock::given(path(LATEST))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "tag_name": "v9.0.0" })))
+            .expect(0)
+            .mount(&target)
+            .await;
         let redirect = MockServer::start().await;
         Mock::given(path(LATEST))
-            .respond_with(ResponseTemplate::new(302).insert_header("Location", "https://evil.example/"))
+            .respond_with(ResponseTemplate::new(302).insert_header("Location", format!("{}{LATEST}", target.uri())))
             .mount(&redirect)
             .await;
         assert!(check(&redirect.uri(), "0.1.0").await.is_err(), "redirects are not followed");
+        target.verify().await;
 
         let junk = MockServer::start().await;
         Mock::given(path(LATEST)).respond_with(ResponseTemplate::new(200).set_body_string("<html>")).mount(&junk).await;

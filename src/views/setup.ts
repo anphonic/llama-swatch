@@ -22,7 +22,7 @@ export function renderSetup(
   const firstByte = numberInput("first-byte", s.thresholds.firstByteTimeoutS, 5, 3600, 1);
   const stall = numberInput("stall", s.thresholds.streamStallTimeoutS, 5, 600, 1);
   const checkUpdates = h("input", { id: "check-updates", type: "checkbox" });
-  checkUpdates.checked = s.checkForUpdates;
+  checkUpdates.checked = s.checkForUpdates ?? true; // offered as on; nothing is sent until saved
   const status = h("p", { class: "form-status", role: "status" });
   const testBtn = h("button", { type: "button" }, "Test connection");
   const saveBtn = h("button", { type: "submit", class: "primary" }, "Save");

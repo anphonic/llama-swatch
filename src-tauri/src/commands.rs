@@ -259,12 +259,12 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<Option<Snapshot>
     Ok(state.latest.lock().expect("latest poisoned").clone())
 }
 
-/// Asks GitHub whether a newer release exists. Sends nothing unless the app is configured and
-/// the user left "Check for updates" on, so the first launch never contacts GitHub before the
-/// settings form (where it can be turned off) has been seen.
+/// Asks GitHub whether a newer release exists. Sends nothing unless the settings form has been
+/// saved with "Check for updates" on, so neither a first launch nor an upgrade from a version
+/// without the setting contacts GitHub before the user could turn it off.
 #[tauri::command]
 pub async fn check_for_update(state: State<'_, AppState>) -> Result<Option<UpdateInfo>, String> {
-    if !load_settings(&state.config_path).is_some_and(|s| s.check_for_updates) {
+    if !load_settings(&state.config_path).is_some_and(|s| s.check_for_updates == Some(true)) {
         return Ok(None);
     }
     update::check(update::GITHUB_API, env!("CARGO_PKG_VERSION")).await

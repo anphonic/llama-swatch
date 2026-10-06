@@ -19,8 +19,9 @@ use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
-        // Used from Rust only (`open_release`); the webview gets no opener permission.
-        .plugin(tauri_plugin_opener::init())
+        // Used from Rust only (`open_release`); the webview gets no opener permission, and the
+        // plugin's injected link-click handler is turned off too.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         // Remembers size/position/maximized across launches. Never resizes by itself; a saved
         // position that no monitor contains is ignored. The plugin's automatic initial restore is
         // skipped and `window::prepare` restores explicitly, so restore -> fit -> show is ordered

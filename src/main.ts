@@ -27,7 +27,7 @@ async function showDashboard(view: SettingsView) {
   });
   dashboard = current;
   root.replaceChildren(current.element);
-  if (view.settings.checkForUpdates) {
+  if (view.settings.checkForUpdates === true) {
     updateCheck ??= checkForUpdate().catch((e) => {
       console.warn("update check failed:", String(e));
       return null;

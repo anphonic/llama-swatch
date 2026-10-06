@@ -93,7 +93,8 @@ export interface Settings {
   pollIntervalMs: number;
   thresholds: Thresholds;
   alwaysOnTop: boolean;
-  checkForUpdates: boolean;
+  /** null: never answered (settings from an older version); treated as off until saved. */
+  checkForUpdates: boolean | null;
 }
 
 /** A newer release on GitHub (update.rs `UpdateInfo`). */
