@@ -93,6 +93,13 @@ export interface Settings {
   pollIntervalMs: number;
   thresholds: Thresholds;
   alwaysOnTop: boolean;
+  checkForUpdates: boolean;
+}
+
+/** A newer release on GitHub (update.rs `UpdateInfo`). */
+export interface UpdateInfo {
+  /** e.g. "v0.2.0" */
+  tag: string;
 }
 
 export interface SettingsView {

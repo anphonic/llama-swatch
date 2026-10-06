@@ -32,11 +32,19 @@ pub struct Settings {
     pub thresholds: Thresholds,
     /// Keep the window above other windows. Applied at startup and by the header pin button.
     pub always_on_top: bool,
+    /// Ask GitHub once per launch whether a newer release exists.
+    pub check_for_updates: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { base_url: "http://localhost:8080".into(), poll_interval_ms: 2000, thresholds: Thresholds::default(), always_on_top: false }
+        Self {
+            base_url: "http://localhost:8080".into(),
+            poll_interval_ms: 2000,
+            thresholds: Thresholds::default(),
+            always_on_top: false,
+            check_for_updates: true,
+        }
     }
 }
 
@@ -277,7 +285,7 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
-        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true };
+        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, check_for_updates: false };
         save_settings(&path, &s).unwrap();
         assert_eq!(load_settings(&path), Some(s));
         assert!(!path.with_extension("json.tmp").exists(), "temp file is renamed away");
@@ -304,6 +312,7 @@ mod tests {
         assert_eq!(s.poll_interval_ms, 2000);
         assert_eq!(s.thresholds, Thresholds::default());
         assert!(!s.always_on_top, "old settings files default to not pinned");
+        assert!(s.check_for_updates, "old settings files default to checking for updates");
     }
 
     #[test]
@@ -315,6 +324,16 @@ mod tests {
         let s = Settings { always_on_top: true, ..Default::default() };
         save_settings(&path, &s).unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().contains("\"alwaysOnTop\": true"));
+    }
+
+    #[test]
+    fn check_for_updates_is_read_and_written_camel_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"baseUrl":"box:9000","checkForUpdates":false}"#).unwrap();
+        assert!(!load_settings(&path).unwrap().check_for_updates);
+        save_settings(&path, &Settings { check_for_updates: false, ..Default::default() }).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"checkForUpdates\": false"));
     }
 
     #[test]

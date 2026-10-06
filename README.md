@@ -83,6 +83,9 @@ a request that was already running may show as Idle until it sends output or fin
   choice is saved in the settings file and re-applied at startup. Always-on-top is a window
   manager feature: on Linux it works on X11, but some Wayland compositors ignore it, in which
   case the button simply has no effect.
+- When a newer release is out, a blue badge such as `v0.2.0 available` appears next to the
+  connection status; click it to open the release page in your browser. The app never
+  downloads or installs anything itself.
 
 ## Install
 
@@ -133,6 +136,11 @@ The API key is optional: you only need one if your llama-swap config sets `apiKe
 
    The saved key is only ever sent to the URL it was saved for. If you change the URL, paste
    the key again.
+
+**Check GitHub for a new release at startup** is on by default. Once per launch, after
+you have saved a connection, the app makes one anonymous request to `api.github.com` for
+this repository's latest release tag. No details about you or your llama-swap are sent.
+Untick it in settings to turn the check off.
 
 Thresholds (slow-load warning, no-first-byte timeout, and so on) are under
 **Stall detection** in settings. The no-first-byte timeout marks a model Stalled only when a
