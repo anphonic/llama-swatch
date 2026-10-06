@@ -310,6 +310,13 @@ function writeView(v: View) {
   }
 }
 
+/**
+ * The answer to the update-check notice, for the rest of this launch. Kept outside any one
+ * dashboard: one is rebuilt after Settings closes, and if the answer couldn't be saved the
+ * settings still say "never answered".
+ */
+let checkAnswer: boolean | null = null;
+
 export function createDashboard(settings: Settings, onOpenSettings: () => void): Dashboard {
   const dot = h("span", { class: "dot" });
   const statusText = h("span", { class: "status-text" }, "Connecting…");
@@ -389,16 +396,12 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     h("span", {}, "Llama Swatch now checks GitHub for a new release at startup. GitHub sees only your IP address and the app version."),
     h("span", { class: "banner-actions" }, keepChecking, stopChecking),
   );
-  checkNotice.hidden = settings.checkForUpdates !== null;
-  /** Set by "Turn off": a check already in flight must not show its badge afterwards. */
-  let checkTurnedOff = false;
+  checkNotice.hidden = settings.checkForUpdates !== null || checkAnswer !== null;
   const answerCheck = (on: boolean) => {
     checkNotice.hidden = true;
     gear.focus(); // the focused button just disappeared
-    if (!on) {
-      checkTurnedOff = true;
-      updateBadge.hidden = true;
-    }
+    checkAnswer = on;
+    if (!on) updateBadge.hidden = true;
     answerSaving = setCheckForUpdatesSetting(on).catch((e) =>
       showToast(`Could not save the update setting (you'll be asked again next launch): ${String(e)}`),
     );
@@ -619,7 +622,9 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   return {
     element,
     showUpdate(u) {
-      if (checkTurnedOff) return;
+      // "Turn off" this launch, not yet overridden from Settings: a check already in flight
+      // must not show its badge afterwards.
+      if (settings.checkForUpdates === null && checkAnswer === false) return;
       updateBadge.textContent = `${u.tag} available`;
       updateBadge.title = `Open the ${u.tag} release page on GitHub`;
       updateBadge.hidden = false;
