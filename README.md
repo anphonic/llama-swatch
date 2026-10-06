@@ -83,6 +83,11 @@ a request that was already running may show as Idle until it sends output or fin
   choice is saved in the settings file and re-applied at startup. Always-on-top is a window
   manager feature: on Linux it works on X11, but some Wayland compositors ignore it, in which
   case the button simply has no effect.
+- **Theme** in settings (the gear) is Match system, Light or Dark. Match system follows the OS
+  light/dark setting and switches live when it changes. On Linux it reads the desktop's
+  dark-style switch through the XDG desktop portal (GNOME, KDE Plasma and most other desktops with
+  a portal), falling back to the GTK theme name; if neither says, the app shows light. Pick Dark
+  or Light to override it.
 
 ## Install
 

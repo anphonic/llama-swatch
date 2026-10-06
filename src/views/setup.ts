@@ -1,6 +1,6 @@
 import { isSavedUrl, saveSettings, testConnection } from "../api";
 import { h } from "../dom";
-import type { Settings, SettingsView, TestResult } from "../types";
+import type { Settings, SettingsView, TestResult, Theme } from "../types";
 
 export function renderSetup(
   view: SettingsView,
@@ -21,6 +21,12 @@ export function renderSetup(
   const stop = numberInput("stop", s.thresholds.stopTimeoutS, 5, 600, 1);
   const firstByte = numberInput("first-byte", s.thresholds.firstByteTimeoutS, 5, 3600, 1);
   const stall = numberInput("stall", s.thresholds.streamStallTimeoutS, 5, 600, 1);
+  const theme = h(
+    "select",
+    { id: "theme" },
+    ...THEMES.map(([value, label]) => h("option", { value }, label)),
+  );
+  theme.value = s.theme;
   const status = h("p", { class: "form-status", role: "status" });
   const testBtn = h("button", { type: "button" }, "Test connection");
   const saveBtn = h("button", { type: "submit", class: "primary" }, "Save");
@@ -33,6 +39,7 @@ export function renderSetup(
     field("key", "API key", key, "Only needed if llama-swap's config sets apiKeys. Stored in your OS keychain, never in a file."),
     view.hasKey ? h("label", { class: "check" }, removeKey, "Remove the saved key") : null,
     field("poll", "Refresh every (seconds)", poll),
+    field("theme", "Theme", theme),
     h(
       "details",
       {},
@@ -66,10 +73,11 @@ export function renderSetup(
       streamStallTimeoutS: readSeconds(stall, 30),
     },
     alwaysOnTop: s.alwaysOnTop, // changed from the dashboard's pin button, not this form
+    theme: theme.value as Theme,
   });
 
-  const controls: Array<HTMLInputElement | HTMLButtonElement> = [
-    url, key, removeKey, poll, load, stop, firstByte, stall, testBtn, saveBtn,
+  const controls: Array<HTMLInputElement | HTMLSelectElement | HTMLButtonElement> = [
+    url, key, removeKey, poll, theme, load, stop, firstByte, stall, testBtn, saveBtn,
   ];
   if (cancelBtn) controls.push(cancelBtn);
   const setBusy = (busy: boolean) => {
@@ -151,6 +159,12 @@ export function renderSetup(
     form,
   );
 }
+
+const THEMES: ReadonlyArray<[Theme, string]> = [
+  ["system", "Match system"],
+  ["light", "Light"],
+  ["dark", "Dark"],
+];
 
 interface KeyContext {
   /** The saved key was actually sent: key field blank and URL unchanged. */

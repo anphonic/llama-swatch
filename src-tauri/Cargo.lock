@@ -2186,6 +2186,7 @@ name = "llama-swatch"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dbus",
  "futures-util",
  "keyring",
  "reqwest 0.12.28",
