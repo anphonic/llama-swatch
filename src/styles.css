@@ -113,7 +113,8 @@ input, .field select {
   border-color: color-mix(in srgb, var(--red) 40%, transparent);
 }
 .banner[hidden] { display: none; }
-.banner-info {
+/* Two classes so the red unauthorized banner style can't recolor this notice. */
+.banner.banner-info {
   background: color-mix(in srgb, var(--blue) 12%, var(--panel));
   border-color: color-mix(in srgb, var(--blue) 40%, transparent);
 }

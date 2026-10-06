@@ -387,10 +387,17 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     h("span", { class: "banner-actions" }, keepChecking, stopChecking),
   );
   checkNotice.hidden = settings.checkForUpdates !== null;
+  /** Set by "Turn off": a check already in flight must not show its badge afterwards. */
+  let checkTurnedOff = false;
   const answerCheck = (on: boolean) => {
     checkNotice.hidden = true;
-    if (!on) updateBadge.hidden = true;
-    setCheckForUpdatesSetting(on).catch((e) => showToast(`Could not save the update setting: ${String(e)}`));
+    if (!on) {
+      checkTurnedOff = true;
+      updateBadge.hidden = true;
+    }
+    setCheckForUpdatesSetting(on).catch((e) =>
+      showToast(`Could not save the update setting (you'll be asked again next launch): ${String(e)}`),
+    );
   };
   keepChecking.addEventListener("click", () => answerCheck(true));
   stopChecking.addEventListener("click", () => answerCheck(false));
@@ -608,6 +615,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   return {
     element,
     showUpdate(u) {
+      if (checkTurnedOff) return;
       updateBadge.textContent = `${u.tag} available`;
       updateBadge.title = `Open the ${u.tag} release page on GitHub`;
       updateBadge.hidden = false;
