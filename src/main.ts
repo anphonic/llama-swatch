@@ -3,6 +3,7 @@ import { checkForUpdate, getSettings, getSnapshot, onSnapshot } from "./api";
 import type { SettingsView, UpdateInfo } from "./types";
 import { createDashboard, type Dashboard } from "./views/dashboard";
 import { renderSetup } from "./views/setup";
+import { applyTheme, initTheme } from "./theme";
 
 const root = document.getElementById("app")!;
 let dashboard: Dashboard | null = null;
@@ -13,7 +14,11 @@ function showSetup(view: SettingsView) {
   dashboard?.destroy();
   dashboard = null;
   const cancel = view.configured ? () => void showDashboard(view) : undefined;
-  root.replaceChildren(renderSetup(view, (saved) => void showDashboard(saved), cancel));
+  const onSaved = (saved: SettingsView) => {
+    applyTheme(saved.settings.theme);
+    void showDashboard(saved);
+  };
+  root.replaceChildren(renderSetup(view, onSaved, cancel));
 }
 
 async function showDashboard(view: SettingsView) {
@@ -48,6 +53,7 @@ async function showDashboard(view: SettingsView) {
 async function boot() {
   await onSnapshot((s) => dashboard?.update(s));
   const view = await getSettings();
+  await initTheme(view.settings.theme);
   if (view.configured) await showDashboard(view);
   else showSetup(view);
 }

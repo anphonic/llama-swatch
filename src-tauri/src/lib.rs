@@ -10,6 +10,7 @@ pub mod poller;
 pub mod runtime;
 pub mod sse;
 pub mod state;
+pub mod theme;
 pub mod update;
 pub mod window;
 
@@ -49,6 +50,7 @@ pub fn run() {
                     eprintln!("monitor failed to start: {e}");
                 }
             }
+            theme::watch(app.handle());
             app.manage(state);
             Ok(())
         })
@@ -63,7 +65,8 @@ pub fn run() {
             commands::unload_model,
             commands::set_always_on_top,
             commands::check_for_update,
-            commands::open_release
+            commands::open_release,
+            commands::system_color_scheme
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

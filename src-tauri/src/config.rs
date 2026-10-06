@@ -35,6 +35,9 @@ pub struct Settings {
     /// Ask GitHub once per launch whether a newer release exists. `None` = never answered (a file
     /// from before the setting existed): no check until the settings form has been saved.
     pub check_for_updates: Option<bool>,
+    /// Colour scheme chosen in settings. `System` follows the OS.
+    #[serde(deserialize_with = "lenient_theme")]
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -45,8 +48,28 @@ impl Default for Settings {
             thresholds: Thresholds::default(),
             always_on_top: false,
             check_for_updates: None,
+            theme: Theme::System,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// Any value other than "light" or "dark" (hand edit, null, newer version) reads as `System`
+/// instead of making the whole settings file unreadable.
+fn lenient_theme<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Theme, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)?.as_str() {
+        Some("light") => Theme::Light,
+        Some("dark") => Theme::Dark,
+        _ => Theme::System,
+    })
 }
 
 impl Settings {
@@ -286,7 +309,7 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
-        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, check_for_updates: Some(false) };
+        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, check_for_updates: Some(false), theme: Theme::Dark };
         save_settings(&path, &s).unwrap();
         assert_eq!(load_settings(&path), Some(s));
         assert!(!path.with_extension("json.tmp").exists(), "temp file is renamed away");
@@ -314,6 +337,23 @@ mod tests {
         assert_eq!(s.thresholds, Thresholds::default());
         assert!(!s.always_on_top, "old settings files default to not pinned");
         assert_eq!(s.check_for_updates, None, "old settings files have not been asked");
+        assert_eq!(s.theme, Theme::System, "old settings files follow the OS theme");
+    }
+
+    #[test]
+    fn theme_is_lowercase_and_unknown_values_fall_back_to_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for (json, want) in [("light", Theme::Light), ("dark", Theme::Dark), ("system", Theme::System), ("Dark", Theme::System), ("sepia", Theme::System)] {
+            std::fs::write(&path, format!(r#"{{"baseUrl":"box:9000","theme":"{json}"}}"#)).unwrap();
+            assert_eq!(load_settings(&path).unwrap().theme, want, "{json}");
+        }
+        for json in ["null", "1", "{}", "[\"dark\"]"] {
+            std::fs::write(&path, format!(r#"{{"baseUrl":"box:9000","theme":{json}}}"#)).unwrap();
+            assert_eq!(load_settings(&path).map(|s| s.theme), Some(Theme::System), "{json}");
+        }
+        save_settings(&path, &Settings { theme: Theme::Dark, ..Default::default() }).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"theme\": \"dark\""));
     }
 
     #[test]

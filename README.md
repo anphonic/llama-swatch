@@ -86,6 +86,11 @@ a request that was already running may show as Idle until it sends output or fin
 - When a newer release is out, a blue badge such as `v0.2.0 available` appears next to the
   connection status; click it to open the release page in your browser. The app never
   downloads or installs anything itself.
+- **Theme** in settings (the gear) is Match system, Light or Dark. Match system follows the OS
+  light/dark setting and switches live when it changes. On Linux it reads the desktop's
+  dark-style switch through the XDG desktop portal (GNOME, KDE Plasma and most other desktops with
+  a portal), falling back to the GTK theme name; if neither says, the app shows light. Pick Dark
+  or Light to override it.
 
 ## Install
 

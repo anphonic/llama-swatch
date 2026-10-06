@@ -206,6 +206,13 @@ pub fn set_always_on_top(state: State<'_, AppState>, on: bool) -> Result<(), Str
     config::save_always_on_top(&state.config_path, on).map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The desktop's light/dark preference, for the "System" theme. Linux only (see `theme`);
+/// elsewhere `unknown`. Blocking D-Bus and `gsettings` calls, so it runs off the main thread.
+#[tauri::command]
+pub async fn system_color_scheme() -> crate::theme::Scheme {
+    tauri::async_runtime::spawn_blocking(crate::theme::current).await.unwrap_or(crate::theme::Scheme::Unknown)
+}
+
 /// INVARIANT: every command that takes the `latest` lock must be `async`. `publish_if_current`
 /// emits under that lock, and with Tauri's `tracing` feature `emit` blocks until the main
 /// thread services it; a sync command runs on the main thread and would deadlock waiting for

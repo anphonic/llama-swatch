@@ -95,6 +95,7 @@ export interface Settings {
   alwaysOnTop: boolean;
   /** null: never answered (settings from an older version); treated as off until saved. */
   checkForUpdates: boolean | null;
+  theme: Theme;
 }
 
 /** A newer release on GitHub (update.rs `UpdateInfo`). */
@@ -102,6 +103,12 @@ export interface UpdateInfo {
   /** e.g. "v0.2.0" */
   tag: string;
 }
+
+/** "system" follows the OS (on Linux via the desktop portal, see `systemColorScheme`). */
+export type Theme = "system" | "light" | "dark";
+
+/** The desktop's preference as the backend reads it; "unknown" outside Linux. */
+export type ColorScheme = "light" | "dark" | "unknown";
 
 export interface SettingsView {
   configured: boolean;

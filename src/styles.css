@@ -16,8 +16,10 @@
   font-size: 14px;
 }
 
+/* Dark: follows the OS unless settings pick Light; Settings > Theme > Dark forces it. data-theme is
+   set by theme.ts (on Linux "system" resolves via the desktop portal, see theme.rs). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0f1115;
     --panel: #171a21;
     --text: #e6e8eb;
@@ -32,6 +34,22 @@
     --red: #f87171;
   }
 }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --text: #e6e8eb;
+  --muted: #9aa3ad;
+  --border: #262b35;
+  --track: #262b35;
+  --grey: #6b7280;
+  --green: #22c55e;
+  --amber: #f59e0b;
+  --amber-text: #f59e0b;
+  --blue: #60a5fa;
+  --red: #f87171;
+}
+:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 /* The scrollbar appearing must not change the layout width. "both-edges" reserves the gutter on the
@@ -44,7 +62,7 @@ button {
 }
 button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
 button:disabled { opacity: 0.6; cursor: default; }
-input {
+input, .field select {
   font: inherit; color: inherit; background: var(--panel);
   border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; width: 100%;
 }
