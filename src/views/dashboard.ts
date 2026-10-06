@@ -1,9 +1,9 @@
 import { h, svg } from "../dom";
 import { formatAgo, formatCount, formatDuration } from "../format";
 import { countLoaded, isLoaded } from "../models";
-import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot } from "../types";
+import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot, UpdateInfo } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadModel, setAlwaysOnTopSetting, unloadModel } from "../api";
+import { loadModel, openRelease, setAlwaysOnTopSetting, unloadModel } from "../api";
 import { renderHistogram } from "./components/histogram";
 import { createRing, type Ring } from "./components/ring";
 import { renderSparkline } from "./components/sparkline";
@@ -14,6 +14,8 @@ import { createHistory } from "./history";
 export interface Dashboard {
   element: HTMLElement;
   update(s: Snapshot): void;
+  /** Shows a header badge that opens the release page. */
+  showUpdate(u: UpdateInfo): void;
   destroy(): void;
 }
 
@@ -316,6 +318,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const meta = h("span", { class: "meta" });
   const versionNote = h("span", { class: "version-note" });
   versionNote.hidden = true;
+  const updateBadge = h("button", { type: "button", class: "badge badge-update" });
+  updateBadge.hidden = true;
   const gear = h("button", { type: "button", class: "icon-button", "aria-label": "Settings", title: "Settings" }, "⚙");
   gear.addEventListener("click", onOpenSettings);
   let pinned = settings.alwaysOnTop;
@@ -344,7 +348,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     "header",
     { class: "header" },
     dot,
-    h("div", { class: "header-main" }, h("div", { class: "header-line" }, statusText, live), h("div", { class: "header-line" }, host, meta, versionNote)),
+    h("div", { class: "header-main" }, h("div", { class: "header-line" }, statusText, live, updateBadge), h("div", { class: "header-line" }, host, meta, versionNote)),
     switcher,
     pin,
     gear,
@@ -586,6 +590,12 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
 
   return {
     element,
+    showUpdate(u) {
+      updateBadge.textContent = `${u.tag} available`;
+      updateBadge.title = `Open the ${u.tag} release page on GitHub`;
+      updateBadge.hidden = false;
+      updateBadge.onclick = () => openRelease(u.tag).catch((e) => showToast(`Could not open the release page: ${String(e)}`));
+    },
     update(s) {
       last = s;
       lastAt = performance.now();

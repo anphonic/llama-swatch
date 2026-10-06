@@ -11,6 +11,7 @@ pub mod runtime;
 pub mod sse;
 pub mod state;
 pub mod theme;
+pub mod update;
 pub mod window;
 
 use std::sync::Arc;
@@ -19,6 +20,9 @@ use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
+        // Used from Rust only (`open_release`); the webview gets no opener permission, and the
+        // plugin's injected link-click handler is turned off too.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         // Remembers size/position/maximized across launches. Never resizes by itself; a saved
         // position that no monitor contains is ignored. The plugin's automatic initial restore is
         // skipped and `window::prepare` restores explicitly, so restore -> fit -> show is ordered
@@ -60,6 +64,8 @@ pub fn run() {
             commands::load_model,
             commands::unload_model,
             commands::set_always_on_top,
+            commands::check_for_update,
+            commands::open_release,
             commands::system_color_scheme
         ])
         .run(tauri::generate_context!())

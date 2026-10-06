@@ -21,6 +21,8 @@ export function renderSetup(
   const stop = numberInput("stop", s.thresholds.stopTimeoutS, 5, 600, 1);
   const firstByte = numberInput("first-byte", s.thresholds.firstByteTimeoutS, 5, 3600, 1);
   const stall = numberInput("stall", s.thresholds.streamStallTimeoutS, 5, 600, 1);
+  const checkUpdates = h("input", { id: "check-updates", type: "checkbox" });
+  checkUpdates.checked = s.checkForUpdates ?? true; // offered as on; nothing is sent until saved
   const theme = h(
     "select",
     { id: "theme" },
@@ -39,6 +41,7 @@ export function renderSetup(
     field("key", "API key", key, "Only needed if llama-swap's config sets apiKeys. Stored in your OS keychain, never in a file."),
     view.hasKey ? h("label", { class: "check" }, removeKey, "Remove the saved key") : null,
     field("poll", "Refresh every (seconds)", poll),
+    h("label", { class: "check" }, checkUpdates, "Check GitHub for a new release at startup"),
     field("theme", "Theme", theme),
     h(
       "details",
@@ -73,11 +76,12 @@ export function renderSetup(
       streamStallTimeoutS: readSeconds(stall, 30),
     },
     alwaysOnTop: s.alwaysOnTop, // changed from the dashboard's pin button, not this form
+    checkForUpdates: checkUpdates.checked,
     theme: theme.value as Theme,
   });
 
   const controls: Array<HTMLInputElement | HTMLSelectElement | HTMLButtonElement> = [
-    url, key, removeKey, poll, theme, load, stop, firstByte, stall, testBtn, saveBtn,
+    url, key, removeKey, poll, checkUpdates, theme, load, stop, firstByte, stall, testBtn, saveBtn,
   ];
   if (cancelBtn) controls.push(cancelBtn);
   const setBusy = (busy: boolean) => {

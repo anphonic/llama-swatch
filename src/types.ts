@@ -93,7 +93,15 @@ export interface Settings {
   pollIntervalMs: number;
   thresholds: Thresholds;
   alwaysOnTop: boolean;
+  /** null: never answered (settings from an older version); treated as off until saved. */
+  checkForUpdates: boolean | null;
   theme: Theme;
+}
+
+/** A newer release on GitHub (update.rs `UpdateInfo`). */
+export interface UpdateInfo {
+  /** e.g. "v0.2.0" */
+  tag: string;
 }
 
 /** "system" follows the OS (on Linux via the desktop portal, see `systemColorScheme`). */

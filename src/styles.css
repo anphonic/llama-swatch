@@ -91,6 +91,8 @@ input, .field select {
 }
 .badge-live { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, transparent); }
 .badge-warn { color: var(--amber-text); border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
+.badge-update { background: none; cursor: pointer; font-weight: 600; font-family: inherit; line-height: normal; text-transform: none; letter-spacing: normal; color: var(--blue); border-color: color-mix(in srgb, var(--blue) 50%, transparent); }
+.badge-update:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .version-note { color: var(--amber-text); }
 .icon-button { font-size: 18px; padding: 0; width: 36px; height: 32px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
 .icon-button.pin[aria-pressed="true"] { background: var(--blue); border-color: var(--blue); color: #fff; }

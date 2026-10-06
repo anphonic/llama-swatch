@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ActivityRow, ColorScheme, Settings, SettingsView, Snapshot, TestResult } from "./types";
+import type { ActivityRow, ColorScheme, Settings, SettingsView, Snapshot, TestResult, UpdateInfo } from "./types";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
 
@@ -25,6 +25,12 @@ export const getActivity = (limit: number) => invoke<ActivityRow[]>("get_activit
 export const loadModel = (id: string) => invoke<void>("load_model", { id });
 
 export const unloadModel = (id: string) => invoke<void>("unload_model", { id });
+
+/** null when up to date, or when the setting is off. */
+export const checkForUpdate = () => invoke<UpdateInfo | null>("check_for_update");
+
+/** Opens the release's GitHub page in the browser (the backend builds the URL from the tag). */
+export const openRelease = (tag: string) => invoke<void>("open_release", { tag });
 
 export const onSnapshot = (cb: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("snapshot", (e) => cb(e.payload));

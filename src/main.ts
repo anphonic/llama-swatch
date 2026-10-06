@@ -1,12 +1,14 @@
 import "./styles.css";
-import { getSettings, getSnapshot, onSnapshot } from "./api";
-import type { SettingsView } from "./types";
+import { checkForUpdate, getSettings, getSnapshot, onSnapshot } from "./api";
+import type { SettingsView, UpdateInfo } from "./types";
 import { createDashboard, type Dashboard } from "./views/dashboard";
 import { renderSetup } from "./views/setup";
 import { applyTheme, initTheme } from "./theme";
 
 const root = document.getElementById("app")!;
 let dashboard: Dashboard | null = null;
+/** Started once per launch, by the first dashboard shown with the setting on. */
+let updateCheck: Promise<UpdateInfo | null> | null = null;
 
 function showSetup(view: SettingsView) {
   dashboard?.destroy();
@@ -30,6 +32,15 @@ async function showDashboard(view: SettingsView) {
   });
   dashboard = current;
   root.replaceChildren(current.element);
+  if (view.settings.checkForUpdates === true) {
+    updateCheck ??= checkForUpdate().catch((e) => {
+      console.warn("update check failed:", String(e));
+      return null;
+    });
+    void updateCheck.then((u) => {
+      if (u && dashboard === current) current.showUpdate(u);
+    });
+  }
   // The first snapshot may have been emitted before we subscribed; fetch it.
   try {
     const snap = await getSnapshot();

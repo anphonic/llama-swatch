@@ -7,12 +7,14 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::api::ActivityRow;
 use crate::client::{self, LlamaSwapClient, TestResult};
 use crate::config::{self, load_settings, normalize_base_url, ConfigError, SecretStore, Settings};
 use crate::monitor::Snapshot;
 use crate::runtime::{self, MonitorConfig, MonitorHandle, SnapshotSink};
+use crate::update::{self, UpdateInfo};
 
 pub struct AppState {
     pub config_path: PathBuf,
@@ -262,6 +264,25 @@ pub fn is_saved_url(state: State<'_, AppState>, base_url: String) -> bool {
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, AppState>) -> Result<Option<Snapshot>, String> {
     Ok(state.latest.lock().expect("latest poisoned").clone())
+}
+
+/// Asks GitHub whether a newer release exists. Sends nothing unless the settings form has been
+/// saved with "Check for updates" on, so neither a first launch nor an upgrade from a version
+/// without the setting contacts GitHub before the user could turn it off.
+#[tauri::command]
+pub async fn check_for_update(state: State<'_, AppState>) -> Result<Option<UpdateInfo>, String> {
+    if !load_settings(&state.config_path).is_some_and(|s| s.check_for_updates == Some(true)) {
+        return Ok(None);
+    }
+    update::check(update::GITHUB_API, env!("CARGO_PKG_VERSION")).await
+}
+
+/// Opens a release's GitHub page in the browser. The URL is built from a strictly validated tag,
+/// so the webview cannot use this to open anything else.
+#[tauri::command]
+pub fn open_release(app: AppHandle, tag: String) -> Result<(), String> {
+    let url = update::release_url(&tag).ok_or("not a release tag")?;
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Most rows `get_activity` will return, whatever the webview asks for.
