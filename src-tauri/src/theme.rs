@@ -125,6 +125,29 @@ mod linux {
             eprintln!("color-scheme watcher not started: {e}");
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn read_one_reply() {
+            let v: Variant<Box<dyn RefArg>> = Variant(Box::new(1_u32));
+            assert_eq!(as_u32(&v.0), Some(1));
+        }
+
+        #[test]
+        fn legacy_read_reply() {
+            let v: Variant<Box<dyn RefArg>> = Variant(Box::new(Variant(Box::new(2_u32) as Box<dyn RefArg>)));
+            assert_eq!(as_u32(&v.0), Some(2));
+        }
+
+        #[test]
+        fn nonnumeric_reply() {
+            let v: Variant<Box<dyn RefArg>> = Variant(Box::new(String::from("prefer-dark")));
+            assert_eq!(as_u32(&v.0), None);
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
