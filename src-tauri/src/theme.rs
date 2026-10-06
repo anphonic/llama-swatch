@@ -95,11 +95,15 @@ mod linux {
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    pub fn current() -> Scheme {
-        match read_portal().map(from_portal) {
+    fn resolve_scheme(portal: Option<u32>, read_gsettings: impl Fn(&str) -> Option<String>) -> Scheme {
+        match portal.map(from_portal) {
             Some(s @ (Scheme::Dark | Scheme::Light)) => s,
-            _ => from_gsettings(gsettings("color-scheme").as_deref(), gsettings("gtk-theme").as_deref()),
+            _ => from_gsettings(read_gsettings("color-scheme").as_deref(), read_gsettings("gtk-theme").as_deref()),
         }
+    }
+
+    pub fn current() -> Scheme {
+        resolve_scheme(read_portal(), gsettings)
     }
 
     /// Follows the portal's `SettingChanged` signal for the life of the app. Silently does nothing
@@ -111,7 +115,7 @@ mod linux {
             let rule = MatchRule::new_signal(IFACE, "SettingChanged").with_path(PATH);
             let added = conn.add_match(rule, move |(ns, key, v): (String, String, Variant<Box<dyn RefArg>>), _, _| {
                 if ns == NS && key == KEY {
-                    let scheme = as_u32(&v.0).map_or(Scheme::Unknown, from_portal);
+                    let scheme = resolve_scheme(as_u32(&v.0), gsettings);
                     let _ = app.emit(CHANGED_EVENT, scheme);
                 }
                 true
@@ -146,6 +150,39 @@ mod linux {
         fn nonnumeric_reply() {
             let v: Variant<Box<dyn RefArg>> = Variant(Box::new(String::from("prefer-dark")));
             assert_eq!(as_u32(&v.0), None);
+        }
+
+        #[test]
+        fn portal_preference_takes_precedence() {
+            for (value, expected) in [(1, Scheme::Dark), (2, Scheme::Light)] {
+                assert_eq!(resolve_scheme(Some(value), |_| panic!("gsettings should not be read")), expected);
+            }
+        }
+
+        #[test]
+        fn unknown_portal_uses_gsettings() {
+            for portal in [Some(0), Some(7), None] {
+                for (color_scheme, gtk_theme, expected) in [
+                    ("'prefer-dark'", "'Adwaita'", Scheme::Dark),
+                    ("'prefer-light'", "'Adwaita-dark'", Scheme::Light),
+                    ("'default'", "'Adwaita-dark'", Scheme::Dark),
+                    ("'default'", "'Adwaita'", Scheme::Unknown),
+                ] {
+                    let read_gsettings = |key: &str| match key {
+                        "color-scheme" => Some(color_scheme.to_owned()),
+                        "gtk-theme" => Some(gtk_theme.to_owned()),
+                        _ => panic!("unexpected gsettings key"),
+                    };
+                    assert_eq!(resolve_scheme(portal, read_gsettings), expected);
+                }
+            }
+        }
+
+        #[test]
+        fn unavailable_preferences_remain_unknown() {
+            for portal in [Some(0), Some(7), None] {
+                assert_eq!(resolve_scheme(portal, |_| None), Scheme::Unknown);
+            }
         }
     }
 }
