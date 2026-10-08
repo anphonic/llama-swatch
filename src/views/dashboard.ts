@@ -1,6 +1,6 @@
 import { h, svg } from "../dom";
 import { formatAgo, formatCount, formatDuration } from "../format";
-import { countLoaded, isLoaded } from "../models";
+import { countLoaded, isLoaded, reloadCandidate } from "../models";
 import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot, UpdateInfo } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadModel, openRelease, setAlwaysOnTopSetting, setCheckForUpdatesSetting, unloadModel } from "../api";
@@ -378,9 +378,17 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const loadedOnlyBox = h("input", { type: "checkbox", id: "loaded-only" });
   loadedOnlyBox.checked = loadedOnly;
   const loadedCount = h("span", { class: "muted loaded-count" });
+  // Offered only while nothing is loaded; see reloadCandidate.
+  const reloadLast = h("button", { type: "button", class: "reload-last" });
+  reloadLast.hidden = true;
+  let reloadTarget: ModelCard | null = null;
+  reloadLast.addEventListener("click", () => {
+    if (reloadTarget) actions.load(reloadTarget);
+  });
   const toolbar = h(
     "div",
     { class: "toolbar" },
+    reloadLast,
     loadedCount,
     h("label", { class: "toggle", for: "loaded-only" }, loadedOnlyBox, h("span", {}, "Loaded only")),
   );
@@ -583,6 +591,13 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       if (!loadedOnly || isLoaded(m)) ordered.push(view.el);
     }
     loadedCount.textContent = `${countLoaded(s.models)} of ${s.models.length} loaded`;
+    // While disconnected the model list is stale, so don't offer a load that would just fail.
+    reloadTarget = isStale(s.connection) ? null : reloadCandidate(s.models);
+    reloadLast.hidden = reloadTarget === null;
+    if (reloadTarget) {
+      reloadLast.textContent = `Reload ${reloadTarget.name}`;
+      reloadLast.title = `Load ${reloadTarget.name}, the last model used (${formatAgo(reloadTarget.lastRequestAtMs!)})`;
+    }
     empty.textContent = s.models.length ? "No models loaded." : "No models reported yet.";
     for (const id of [...cards.keys()]) if (!ids.has(id)) cards.delete(id);
     const wanted = ordered.length ? ordered : [empty];
