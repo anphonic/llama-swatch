@@ -274,18 +274,19 @@ class CardView {
 }
 
 const LOADED_ONLY_KEY = "llama-swatch.loadedOnly";
+const COMPACT_KEY = "llama-swatch.compact";
 
-function readLoadedOnly(): boolean {
+function readFlag(key: string): boolean {
   try {
-    return localStorage.getItem(LOADED_ONLY_KEY) === "1";
+    return localStorage.getItem(key) === "1";
   } catch {
     return false;
   }
 }
 
-function writeLoadedOnly(on: boolean) {
+function writeFlag(key: string, on: boolean) {
   try {
-    localStorage.setItem(LOADED_ONLY_KEY, on ? "1" : "0");
+    localStorage.setItem(key, on ? "1" : "0");
   } catch {
     // Storage unavailable: the choice just won't persist.
   }
@@ -374,19 +375,22 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const openSettings = h("button", { type: "button" }, "Open settings");
   openSettings.addEventListener("click", openSettingsWhenSaved);
 
-  let loadedOnly = readLoadedOnly();
+  let loadedOnly = readFlag(LOADED_ONLY_KEY);
   const loadedOnlyBox = h("input", { type: "checkbox", id: "loaded-only" });
   loadedOnlyBox.checked = loadedOnly;
+  const compactBox = h("input", { type: "checkbox", id: "compact" });
+  compactBox.checked = readFlag(COMPACT_KEY);
   const loadedCount = h("span", { class: "muted loaded-count" });
   const toolbar = h(
     "div",
     { class: "toolbar" },
     loadedCount,
+    h("label", { class: "toggle", for: "compact", title: "One line per model, so more fit without scrolling" }, compactBox, h("span", {}, "Compact")),
     h("label", { class: "toggle", for: "loaded-only" }, loadedOnlyBox, h("span", {}, "Loaded only")),
   );
   loadedOnlyBox.addEventListener("change", () => {
     loadedOnly = loadedOnlyBox.checked;
-    writeLoadedOnly(loadedOnly);
+    writeFlag(LOADED_ONLY_KEY, loadedOnly);
     render();
   });
 
@@ -414,6 +418,12 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   keepChecking.addEventListener("click", () => answerCheck(true));
   stopChecking.addEventListener("click", () => answerCheck(false));
   const grid = h("section", { class: "grid" });
+  // Compact is pure CSS on the same cards, so loading, unloading and tooltips work unchanged.
+  grid.classList.toggle("compact", compactBox.checked);
+  compactBox.addEventListener("change", () => {
+    grid.classList.toggle("compact", compactBox.checked);
+    writeFlag(COMPACT_KEY, compactBox.checked);
+  });
   const empty = h("p", { class: "empty" }, "No models reported yet.");
   const tiles = {
     requests: createStatTile("Requests"),

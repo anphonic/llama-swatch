@@ -257,6 +257,19 @@ input, .field select {
 
 /* ---- card actions ---- */
 .card { user-select: none; }
+
+/* ---- compact cards ---- */
+/* One 40px row per model: ring, name, pill, detail. The sparkline, TTL bar and sub line stay in
+   the DOM but are hidden; the detail's tooltip still carries the full text. */
+.grid.compact { gap: 6px; }
+.grid.compact .card { height: 40px; flex-direction: row; align-items: center; gap: 10px; padding: 0 10px; border-radius: 10px; }
+.grid.compact .card-head { flex: 1; min-width: 0; height: auto; gap: 10px; }
+.grid.compact .ring { width: 24px; height: 24px; }
+.grid.compact .ring-label { display: none; }
+.grid.compact .card-heading { flex-direction: row; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.grid.compact .card-title { flex: 0 1 auto; min-width: 0; }
+.grid.compact .card-detail { flex: 0 1 45%; min-width: 0; text-align: right; font-size: 12px; }
+.grid.compact .card-spark, .grid.compact .ttl-track, .grid.compact .card-sub { display: none; }
 .toast {
   padding: 8px 12px; border-radius: 10px; color: var(--red);
   background: color-mix(in srgb, var(--red) 10%, var(--panel));
