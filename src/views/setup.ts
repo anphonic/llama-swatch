@@ -1,6 +1,7 @@
 import { isSavedUrl, saveSettings, testConnection } from "../api";
 import { h } from "../dom";
 import type { Settings, SettingsView, TestResult, Theme } from "../types";
+import { launchCheckAnswer } from "./dashboard";
 
 export function renderSetup(
   view: SettingsView,
@@ -22,7 +23,8 @@ export function renderSetup(
   const firstByte = numberInput("first-byte", s.thresholds.firstByteTimeoutS, 5, 3600, 1);
   const stall = numberInput("stall", s.thresholds.streamStallTimeoutS, 5, 600, 1);
   const checkUpdates = h("input", { id: "check-updates", type: "checkbox" });
-  checkUpdates.checked = s.checkForUpdates ?? true; // never answered means on
+  // Never answered means on, unless the notice was answered this launch but the answer couldn't be saved.
+  checkUpdates.checked = s.checkForUpdates ?? launchCheckAnswer() ?? true;
   const theme = h(
     "select",
     { id: "theme" },
