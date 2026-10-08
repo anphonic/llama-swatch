@@ -268,8 +268,10 @@ input, .field select {
 .grid.compact .ring-label { display: none; }
 .grid.compact .card-heading { flex-direction: row; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .grid.compact .card-title { flex: 0 1 auto; min-width: 0; }
-.grid.compact .card-detail { flex: 0 1 45%; min-width: 0; text-align: right; font-size: 12px; }
+.grid.compact .card-detail { flex: 0 1 auto; max-width: 45%; min-width: 0; text-align: right; font-size: 12px; }
 .grid.compact .card-spark, .grid.compact .ttl-track, .grid.compact .card-sub { display: none; }
+/* The short detail can cut off a "reply slow" warning, so the whole row shows it with an amber edge. */
+.grid.compact .card:not([data-state="stalled"]):has(.card-detail .warn) { border-color: color-mix(in srgb, var(--amber) 60%, transparent); }
 .toast {
   padding: 8px 12px; border-radius: 10px; color: var(--red);
   background: color-mix(in srgb, var(--red) 10%, var(--panel));
