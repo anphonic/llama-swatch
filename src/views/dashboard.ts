@@ -383,7 +383,11 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   reloadLast.hidden = true;
   let reloadTarget: ModelCard | null = null;
   reloadLast.addEventListener("click", () => {
-    if (reloadTarget) actions.load(reloadTarget);
+    if (!reloadTarget) return;
+    const card = cards.get(reloadTarget.id)?.el;
+    actions.load(reloadTarget);
+    // The button hides once the load starts; keep keyboard focus on the model's card instead.
+    if (card?.isConnected) card.focus();
   });
   const toolbar = h(
     "div",
@@ -596,7 +600,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     reloadLast.hidden = reloadTarget === null;
     if (reloadTarget) {
       reloadLast.textContent = `Reload ${reloadTarget.name}`;
-      reloadLast.title = `Load ${reloadTarget.name}, the last model used (${formatAgo(reloadTarget.lastRequestAtMs!)})`;
+      // No "N s ago" here: it would rewrite the tooltip every second while it's open.
+      reloadLast.title = `Load ${reloadTarget.name}, the last model used`;
     }
     empty.textContent = s.models.length ? "No models loaded." : "No models reported yet.";
     for (const id of [...cards.keys()]) if (!ids.has(id)) cards.delete(id);
