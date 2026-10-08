@@ -317,6 +317,11 @@ function writeView(v: View) {
  */
 let checkAnswer: boolean | null = null;
 
+/** This launch's answer to the update-check notice, or null if it hasn't been answered. */
+export function launchCheckAnswer(): boolean | null {
+  return checkAnswer;
+}
+
 export function createDashboard(settings: Settings, onOpenSettings: () => void): Dashboard {
   const dot = h("span", { class: "dot" });
   const statusText = h("span", { class: "status-text" }, "Connecting…");
