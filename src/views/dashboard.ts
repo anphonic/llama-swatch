@@ -390,8 +390,10 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   let focusAfterReload: string | null = null;
   reloadLast.addEventListener("click", () => {
     if (!reloadTarget) return;
-    focusAfterReload = reloadTarget.id;
-    actions.load(reloadTarget);
+    const target = reloadTarget;
+    focusAfterReload = target.id;
+    actions.load(target);
+    if (!loading.has(target.id)) focusAfterReload = null; // the load was declined, so there is nothing to follow
   });
   const toolbar = h(
     "div",
@@ -621,7 +623,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       // Only take focus back from the hidden button; if the user has moved on, leave it.
       if (focus !== reloadLast && focus !== document.body && focus !== null) focusAfterReload = null;
       else if (el?.isConnected) {
-        el.focus();
+        el.focus({ preventScroll: true });
         focusAfterReload = null;
       } else if (!loading.has(id)) focusAfterReload = null; // the load failed before the card appeared
     }
