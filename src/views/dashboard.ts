@@ -1,6 +1,6 @@
 import { h, svg } from "../dom";
 import { formatAgo, formatCount, formatDuration } from "../format";
-import { countLoaded, isLoaded } from "../models";
+import { countLoaded, isLoaded, reloadCandidate } from "../models";
 import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot, UpdateInfo } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadModel, openRelease, setAlwaysOnTopSetting, setCheckForUpdatesSetting, unloadModel } from "../api";
@@ -381,9 +381,27 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const compactBox = h("input", { type: "checkbox", id: "compact" });
   compactBox.checked = readFlag(COMPACT_KEY);
   const loadedCount = h("span", { class: "muted loaded-count" });
+  // Offered only while nothing is loaded; see reloadCandidate.
+  const reloadLast = h("button", { type: "button", class: "reload-last" });
+  reloadLast.hidden = true;
+  let reloadTarget: ModelCard | null = null;
+  /**
+   * The button hides once the load starts, so focus moves to the model's card instead. With
+   * "Loaded only" on, that card isn't in the grid until a snapshot reports it loading, so the
+   * move waits for renderCards to insert it.
+   */
+  let focusAfterReload: string | null = null;
+  reloadLast.addEventListener("click", () => {
+    if (!reloadTarget) return;
+    const target = reloadTarget;
+    focusAfterReload = target.id;
+    actions.load(target);
+    if (!loading.has(target.id)) focusAfterReload = null; // the load was declined, so there is nothing to follow
+  });
   const toolbar = h(
     "div",
     { class: "toolbar" },
+    reloadLast,
     loadedCount,
     h("label", { class: "toggle", for: "compact", title: "One line per model, so more fit without scrolling" }, compactBox, h("span", {}, "Compact")),
     h("label", { class: "toggle", for: "loaded-only" }, loadedOnlyBox, h("span", {}, "Loaded only")),
@@ -499,6 +517,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       const busy = busyOther(card.id);
       if (busy && !confirm(`${busy.name} has a request in flight. Loading ${card.name} may swap it out. Load anyway?`)) return;
       loading.add(card.id);
+      render();
       loadModel(card.id)
         .catch((e) => showToast(`Could not load ${card.name}: ${String(e)}`))
         .finally(() => loading.delete(card.id));
@@ -593,11 +612,31 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       if (!loadedOnly || isLoaded(m)) ordered.push(view.el);
     }
     loadedCount.textContent = `${countLoaded(s.models)} of ${s.models.length} loaded`;
+    // While disconnected the model list is stale, so don't offer a load that would just fail.
+    reloadTarget = isStale(s.connection) || loading.size > 0 ? null : reloadCandidate(s.models);
+    reloadLast.hidden = reloadTarget === null;
+    if (reloadTarget) {
+      reloadLast.textContent = `Reload ${reloadTarget.name}`;
+      // No "N s ago" here: it would rewrite the tooltip every second while it's open.
+      reloadLast.title = `Load ${reloadTarget.name}, the last model used`;
+    }
     empty.textContent = s.models.length ? "No models loaded." : "No models reported yet.";
     for (const id of [...cards.keys()]) if (!ids.has(id)) cards.delete(id);
     const wanted = ordered.length ? ordered : [empty];
     const same = wanted.length === grid.children.length && wanted.every((el, i) => grid.children[i] === el);
     if (!same) grid.replaceChildren(...wanted);
+
+    if (focusAfterReload !== null) {
+      const id = focusAfterReload;
+      const el = cards.get(id)?.el;
+      const focus = document.activeElement;
+      // Only take focus back from the hidden button; if the user has moved on, leave it.
+      if (focus !== reloadLast && focus !== document.body && focus !== null) focusAfterReload = null;
+      else if (el?.isConnected) {
+        el.focus({ preventScroll: true });
+        focusAfterReload = null;
+      } else if (!loading.has(id)) focusAfterReload = null; // the load failed before the card appeared
+    }
   }
 
   function renderStats(s: Snapshot) {

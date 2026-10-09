@@ -123,6 +123,8 @@ input, .field select {
 /* ---- toolbar ---- */
 .toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 12px; height: 32px; }
 .loaded-count { font-size: 12px; white-space: nowrap; }
+/* Sits at the left of the toolbar; a long model name is cut with an ellipsis (the title has it all). */
+.reload-last { margin-right: auto; min-width: 0; padding: 4px 10px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; user-select: none; }
 .toggle input { width: auto; padding: 0; margin: 0; accent-color: var(--blue); cursor: pointer; }
 
