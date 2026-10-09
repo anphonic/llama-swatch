@@ -501,6 +501,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       const busy = busyOther(card.id);
       if (busy && !confirm(`${busy.name} has a request in flight. Loading ${card.name} may swap it out. Load anyway?`)) return;
       loading.add(card.id);
+      render();
       loadModel(card.id)
         .catch((e) => showToast(`Could not load ${card.name}: ${String(e)}`))
         .finally(() => loading.delete(card.id));
@@ -596,7 +597,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     }
     loadedCount.textContent = `${countLoaded(s.models)} of ${s.models.length} loaded`;
     // While disconnected the model list is stale, so don't offer a load that would just fail.
-    reloadTarget = isStale(s.connection) ? null : reloadCandidate(s.models);
+    reloadTarget = isStale(s.connection) || loading.size > 0 ? null : reloadCandidate(s.models);
     reloadLast.hidden = reloadTarget === null;
     if (reloadTarget) {
       reloadLast.textContent = `Reload ${reloadTarget.name}`;
