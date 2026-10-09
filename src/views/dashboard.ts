@@ -382,12 +382,16 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const reloadLast = h("button", { type: "button", class: "reload-last" });
   reloadLast.hidden = true;
   let reloadTarget: ModelCard | null = null;
+  /**
+   * The button hides once the load starts, so focus moves to the model's card instead. With
+   * "Loaded only" on, that card isn't in the grid until a snapshot reports it loading, so the
+   * move waits for renderCards to insert it.
+   */
+  let focusAfterReload: string | null = null;
   reloadLast.addEventListener("click", () => {
     if (!reloadTarget) return;
-    const card = cards.get(reloadTarget.id)?.el;
+    focusAfterReload = reloadTarget.id;
     actions.load(reloadTarget);
-    // The button hides once the load starts; keep keyboard focus on the model's card instead.
-    if (card?.isConnected) card.focus();
   });
   const toolbar = h(
     "div",
@@ -609,6 +613,18 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     const wanted = ordered.length ? ordered : [empty];
     const same = wanted.length === grid.children.length && wanted.every((el, i) => grid.children[i] === el);
     if (!same) grid.replaceChildren(...wanted);
+
+    if (focusAfterReload !== null) {
+      const id = focusAfterReload;
+      const el = cards.get(id)?.el;
+      const focus = document.activeElement;
+      // Only take focus back from the hidden button; if the user has moved on, leave it.
+      if (focus !== reloadLast && focus !== document.body && focus !== null) focusAfterReload = null;
+      else if (el?.isConnected) {
+        el.focus();
+        focusAfterReload = null;
+      } else if (!loading.has(id)) focusAfterReload = null; // the load failed before the card appeared
+    }
   }
 
   function renderStats(s: Snapshot) {
