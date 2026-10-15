@@ -85,10 +85,16 @@ export interface Snapshot {
   streamedBytes: number | null;
 }
 
-/** Token counts of one finished request. The whole prompt is `inputTokens + cacheTokens`. */
+/**
+ * Token counts of one finished request, as llama-swap reports them. `inputTokens + cacheTokens` is
+ * not necessarily the prompt size: see `inputTokens`.
+ */
 export interface LastRequest {
   model: string;
-  /** Prompt tokens processed for this request. */
+  /**
+   * Prompt tokens. Depending on the upstream this is the whole prompt (OpenAI usage, cached tokens
+   * included) or only the newly processed part (llama.cpp timings).
+   */
   inputTokens: number;
   /** Prompt tokens reused from the cache. */
   cacheTokens: number;

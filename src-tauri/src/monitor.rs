@@ -50,8 +50,10 @@ pub struct StatsSummary {
 }
 
 /// Token counts of the newest finished request on any model, from `/api/metrics/activity`.
-/// `input_tokens` are newly processed prompt tokens and `cache_tokens` are prompt tokens reused
-/// from the cache, so the whole prompt is their sum.
+/// Shown as llama-swap reports them: depending on the upstream, `input_tokens` is either the
+/// whole prompt (OpenAI `usage.prompt_tokens`, which counts cached tokens too) or only newly
+/// processed tokens (llama.cpp `timings.prompt_n`), so `input_tokens + cache_tokens` is not
+/// necessarily the prompt size.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastRequest {
@@ -94,6 +96,9 @@ pub struct MonitorState {
     stats: Option<StatsResponse>,
     stats_available: bool,
     activity: Vec<ActivityEntry>,
+    /// Activity id and counts of the newest request that reported tokens. Kept across polls so
+    /// it survives scrolling out of the activity window behind token-less rows.
+    last_request: Option<(i64, LastRequest)>,
     inflight: InflightTable,
     events: DecodeHealth,
     /// model id -> (llama-swap state, when we first saw it in that state)
@@ -112,6 +117,7 @@ impl MonitorState {
             stats: None,
             stats_available: true,
             activity: Vec::new(),
+            last_request: None,
             inflight: InflightTable::default(),
             events: DecodeHealth::default(),
             state_since: HashMap::new(),
@@ -145,8 +151,14 @@ impl MonitorState {
                     Feature::Failed => {}
                 }
                 match d.activity {
-                    Feature::Available(a) => self.activity = a,
-                    Feature::Unavailable => self.activity.clear(),
+                    Feature::Available(a) => {
+                        self.activity = a;
+                        self.update_last_request();
+                    }
+                    Feature::Unavailable => {
+                        self.activity.clear();
+                        self.last_request = None;
+                    }
                     Feature::Failed => {}
                 }
             }
@@ -237,24 +249,33 @@ impl MonitorState {
             stats_available: self.stats_available,
             event_stream: self.events.state(),
             event_read_failed: self.events.consecutive_failures() > 0,
-            last_request: self.last_request(),
+            last_request: self.last_request.as_ref().map(|(_, lr)| lr.clone()),
             streamed_bytes: self.inflight.streamed_bytes(),
         }
     }
 
-    /// The newest request that reported any tokens. Rows without token data (failed requests,
-    /// upstreams without llama.cpp timings) are skipped so they don't blank the tiles. llama-swap
-    /// sends -1 for an unknown count; it is shown as 0.
-    fn last_request(&self) -> Option<LastRequest> {
+    /// Moves `last_request` to the newest request in the activity window that reported any
+    /// tokens. Rows without token data (failed requests, upstreams that report none) are skipped,
+    /// and the kept request stays when only such rows are newer. Ids only grow while llama-swap
+    /// runs, so a window whose newest id is below the kept one (or an empty window) means it
+    /// restarted: the kept request is dropped and the new window decides. llama-swap sends -1 for
+    /// an unknown count; it is shown as 0.
+    fn update_last_request(&mut self) {
         let t = |a: &ActivityEntry| (a.tokens.input_tokens.max(0), a.tokens.cache_tokens.max(0), a.tokens.output_tokens.max(0));
-        self.activity
-            .iter()
-            .filter(|a| t(a) != (0, 0, 0))
-            .max_by_key(|a| a.id)
-            .map(|a| {
+        let newest_id = self.activity.iter().map(|a| a.id).max();
+        if let Some((kept, _)) = self.last_request {
+            if newest_id.is_none_or(|n| n < kept) {
+                self.last_request = None;
+            }
+        }
+        let found = self.activity.iter().filter(|a| t(a) != (0, 0, 0)).max_by_key(|a| a.id);
+        if let Some(a) = found {
+            if self.last_request.as_ref().is_none_or(|(kept, _)| a.id > *kept) {
                 let (input_tokens, cache_tokens, output_tokens) = t(a);
-                LastRequest { model: a.model.clone(), input_tokens, cache_tokens, output_tokens }
-            })
+                let lr = LastRequest { model: a.model.clone(), input_tokens, cache_tokens, output_tokens };
+                self.last_request = Some((a.id, lr));
+            }
+        }
     }
 
     fn card(&self, id: String, name: String, description: String, now: Instant, wall_ms: i64, t: &Thresholds) -> ModelCard {
@@ -434,6 +455,38 @@ mod tests {
         m.apply_poll(PollOutcome::Ok(d), t0, WALL);
         let lr = m.snapshot(t0, WALL, &Thresholds::default()).last_request.unwrap();
         assert_eq!((lr.input_tokens, lr.cache_tokens), (812, 0), "-1 means unknown, never subtracted");
+    }
+
+    #[test]
+    fn last_request_survives_token_less_polls_and_resets_on_restart() {
+        let t0 = Instant::now();
+        let mut m = MonitorState::new("h");
+        let poll = |m: &mut MonitorState, rows: Vec<(i64, i64)>| {
+            let mut d = data(vec![], None);
+            d.activity = Feature::Available(
+                rows.into_iter()
+                    .map(|(id, out)| ActivityEntry {
+                        id,
+                        model: "a".into(),
+                        tokens: TokenMetrics { output_tokens: out, ..Default::default() },
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+            m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+            m.snapshot(t0, WALL, &Thresholds::default()).last_request.map(|lr| lr.output_tokens)
+        };
+        assert_eq!(poll(&mut m, vec![(5, 40)]), Some(40));
+        assert_eq!(poll(&mut m, vec![(6, 0), (7, -1)]), Some(40), "kept while only token-less rows are in the window");
+        assert_eq!(poll(&mut m, vec![(8, 9)]), Some(9));
+        assert_eq!(poll(&mut m, vec![(1, 0)]), None, "ids went backwards: llama-swap restarted");
+        assert_eq!(poll(&mut m, vec![(2, 3)]), Some(3));
+        assert_eq!(poll(&mut m, vec![]), None, "empty window after a restart");
+        assert_eq!(poll(&mut m, vec![(1, 4)]), Some(4));
+        let mut d = data(vec![], None);
+        d.activity = Feature::Unavailable;
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).last_request, None);
     }
 
     #[test]

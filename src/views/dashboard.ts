@@ -1,5 +1,5 @@
 import { h, svg } from "../dom";
-import { cachedPercent, formatAgo, formatBytes, formatCount, formatDuration } from "../format";
+import { formatAgo, formatBytes, formatCount, formatDuration } from "../format";
 import { countLoaded, isLoaded, reloadCandidate } from "../models";
 import type { Connection, EventStream, ModelCard, ModelState, Settings, Snapshot, UpdateInfo } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -445,7 +445,7 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
   const empty = h("p", { class: "empty" }, "No models reported yet.");
   const tiles = {
     requests: createStatTile("Requests"),
-    input: createStatTile("Last prompt"),
+    input: createStatTile("Last input"),
     output: createStatTile("Last output"),
     speed: createStatTile("Generation p50"),
   };
@@ -648,12 +648,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
       [lr?.model, st ? `Total since llama-swap started: ${totals}` : ""].filter(Boolean).join("\n");
     const promptHint = hint(st ? `${formatCount(st.totalInputTokens)} in, ${formatCount(st.totalCacheTokens)} cached` : "");
     if (lr) {
-      const pct = cachedPercent(lr.cacheTokens, lr.inputTokens);
-      tiles.input.update(
-        formatCount(lr.inputTokens + lr.cacheTokens),
-        `${formatCount(lr.cacheTokens)} cached (${pct}%) · ${formatCount(lr.inputTokens)} new`,
-        promptHint,
-      );
+      // Shown as reported, never summed: whether input includes the cached tokens depends on the upstream.
+      tiles.input.update(formatCount(lr.inputTokens), `${formatCount(lr.cacheTokens)} cached`, promptHint);
     } else {
       tiles.input.update("—", "", promptHint);
     }

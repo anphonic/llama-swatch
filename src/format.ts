@@ -30,12 +30,6 @@ export function formatBytes(n: number): string {
   return `${n} B`;
 }
 
-/** Share of a prompt served from cache, rounded down so it reads 100% only when nothing was new. */
-export function cachedPercent(cached: number, fresh: number): number {
-  const total = cached + fresh;
-  return total > 0 ? Math.floor((cached * 100) / total) : 0;
-}
-
 export function formatAgo(ms: number, now: number = Date.now()): string {
   return `${formatDuration((now - ms) / 1000)} ago`;
 }
