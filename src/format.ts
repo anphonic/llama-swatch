@@ -33,7 +33,7 @@ export function formatBytes(n: number): string {
 /** Share of a prompt served from cache, rounded down so it reads 100% only when nothing was new. */
 export function cachedPercent(cached: number, fresh: number): number {
   const total = cached + fresh;
-  return total > 0 ? Math.floor((cached / total) * 100) : 0;
+  return total > 0 ? Math.floor((cached * 100) / total) : 0;
 }
 
 export function formatAgo(ms: number, now: number = Date.now()): string {
