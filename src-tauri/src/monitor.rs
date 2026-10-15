@@ -257,14 +257,18 @@ impl MonitorState {
     /// Moves `last_request` to the newest request in the activity window that reported any
     /// tokens. Rows without token data (failed requests, upstreams that report none) are skipped,
     /// and the kept request stays when only such rows are newer. Ids only grow while llama-swap
-    /// runs, so a window whose newest id is below the kept one (or an empty window) means it
-    /// restarted: the kept request is dropped and the new window decides. llama-swap sends -1 for
+    /// runs, so llama-swap restarted when the window is empty, its newest id is below the kept
+    /// one, or it spans the kept id without that row: the kept request is dropped and the new
+    /// window decides. A restart is missed only when the new ids have all moved past the kept
+    /// one, and then the kept request is still replaced by the next request with tokens. llama-swap sends -1 for
     /// an unknown count; it is shown as 0.
     fn update_last_request(&mut self) {
         let t = |a: &ActivityEntry| (a.tokens.input_tokens.max(0), a.tokens.cache_tokens.max(0), a.tokens.output_tokens.max(0));
-        let newest_id = self.activity.iter().map(|a| a.id).max();
         if let Some((kept, _)) = self.last_request {
-            if newest_id.is_none_or(|n| n < kept) {
+            let oldest = self.activity.iter().map(|a| a.id).min();
+            let newest = self.activity.iter().map(|a| a.id).max();
+            let spans_kept = oldest.is_some_and(|o| o <= kept) && !self.activity.iter().any(|a| a.id == kept);
+            if newest.is_none_or(|n| n < kept) || spans_kept {
                 self.last_request = None;
             }
         }
@@ -479,6 +483,13 @@ mod tests {
         assert_eq!(poll(&mut m, vec![(5, 40)]), Some(40));
         assert_eq!(poll(&mut m, vec![(6, 0), (7, -1)]), Some(40), "kept while only token-less rows are in the window");
         assert_eq!(poll(&mut m, vec![(8, 9)]), Some(9));
+        assert_eq!(poll(&mut m, vec![(8, 9)]), Some(9), "newest id equal to the kept one");
+        let mut d = data(vec![], None);
+        d.activity = Feature::Failed;
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).last_request.map(|lr| lr.output_tokens), Some(9));
+        assert_eq!(poll(&mut m, vec![(8, 9), (9, 0)]), Some(9));
+        assert_eq!(poll(&mut m, vec![(5, 6), (9, 0), (10, 0)]), Some(6), "window spans the kept id without it: restarted");
         assert_eq!(poll(&mut m, vec![(1, 0)]), None, "ids went backwards: llama-swap restarted");
         assert_eq!(poll(&mut m, vec![(2, 3)]), Some(3));
         assert_eq!(poll(&mut m, vec![]), None, "empty window after a restart");

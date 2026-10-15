@@ -13,10 +13,20 @@ export interface StatTile {
 let nextId = 0;
 
 export function createStatTile(label: string): StatTile {
-  const value = h("div", { class: "tile-value" }, "—");
-  const sub = h("div", { class: "tile-sub" });
-  const hintEl = h("div", { class: "tile-hint", id: `tile-hint-${nextId++}` });
-  const el = h("div", { class: "tile" }, h("div", { class: "tile-label" }, label), value, sub, hintEl);
+  const id = `tile-${nextId++}`;
+  const value = h("div", { class: "tile-value", id: `${id}-value` }, "—");
+  const sub = h("div", { class: "tile-sub", id: `${id}-sub` });
+  const hintEl = h("div", { class: "tile-hint", id: `${id}-hint` });
+  const labelEl = h("div", { class: "tile-label", id: `${id}-label` }, label);
+  // Named by its own text, so a focused tile reads "Last input, 812, 0 cached" rather than the tooltip.
+  const el = h(
+    "div",
+    { class: "tile", role: "group", "aria-labelledby": `${labelEl.id} ${value.id} ${sub.id}` },
+    labelEl,
+    value,
+    sub,
+    hintEl,
+  );
   return {
     el,
     update(v, s = "", hint = "") {
