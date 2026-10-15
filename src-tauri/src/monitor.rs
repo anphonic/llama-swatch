@@ -237,14 +237,24 @@ impl MonitorState {
             stats_available: self.stats_available,
             event_stream: self.events.state(),
             event_read_failed: self.events.consecutive_failures() > 0,
-            last_request: self.activity.iter().max_by_key(|a| a.id).map(|a| LastRequest {
-                model: a.model.clone(),
-                input_tokens: a.tokens.input_tokens,
-                cache_tokens: a.tokens.cache_tokens,
-                output_tokens: a.tokens.output_tokens,
-            }),
+            last_request: self.last_request(),
             streamed_bytes: self.inflight.streamed_bytes(),
         }
+    }
+
+    /// The newest request that reported any tokens. Rows without token data (failed requests,
+    /// upstreams without llama.cpp timings) are skipped so they don't blank the tiles. llama-swap
+    /// sends -1 for an unknown count; it is shown as 0.
+    fn last_request(&self) -> Option<LastRequest> {
+        let t = |a: &ActivityEntry| (a.tokens.input_tokens.max(0), a.tokens.cache_tokens.max(0), a.tokens.output_tokens.max(0));
+        self.activity
+            .iter()
+            .filter(|a| t(a) != (0, 0, 0))
+            .max_by_key(|a| a.id)
+            .map(|a| {
+                let (input_tokens, cache_tokens, output_tokens) = t(a);
+                LastRequest { model: a.model.clone(), input_tokens, cache_tokens, output_tokens }
+            })
     }
 
     fn card(&self, id: String, name: String, description: String, now: Instant, wall_ms: i64, t: &Thresholds) -> ModelCard {
@@ -408,6 +418,7 @@ mod tests {
             ActivityEntry { id: 7, model: "b".into(), tokens: tokens(120, 512, 80), ..Default::default() },
             ActivityEntry { id: 9, model: "a".into(), tokens: tokens(812, 0, 400), ..Default::default() },
             ActivityEntry { id: 8, model: "b".into(), tokens: tokens(1, 2, 3), ..Default::default() },
+            ActivityEntry { id: 10, model: "c".into(), tokens: tokens(0, -1, 0), ..Default::default() },
         ]);
         m.apply_poll(PollOutcome::Ok(d), t0, WALL);
         let s = m.snapshot(t0, WALL, &Thresholds::default());
@@ -417,6 +428,12 @@ mod tests {
         );
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["lastRequest"], serde_json::json!({"model":"a","inputTokens":812,"cacheTokens":0,"outputTokens":400}));
+
+        let mut d = data(vec![], None);
+        d.activity = Feature::Available(vec![ActivityEntry { id: 11, model: "d".into(), tokens: tokens(812, -1, 5), ..Default::default() }]);
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        let lr = m.snapshot(t0, WALL, &Thresholds::default()).last_request.unwrap();
+        assert_eq!((lr.input_tokens, lr.cache_tokens), (812, 0), "-1 means unknown, never subtracted");
     }
 
     #[test]

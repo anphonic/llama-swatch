@@ -24,15 +24,16 @@ export function formatCount(n: number): string {
 export function formatBytes(n: number): string {
   const units: [string, number][] = [["GB", 1024 ** 3], ["MB", 1024 ** 2], ["KB", 1024]];
   for (const [unit, size] of units) {
-    if (n >= size) return `${(n / size).toFixed(1)} ${unit}`;
+    // Compare after rounding so 1,048,575 B reads "1.0 MB", not "1024.0 KB".
+    if (Math.round((n / size) * 10) >= 10) return `${(n / size).toFixed(1)} ${unit}`;
   }
   return `${n} B`;
 }
 
-/** Share of a prompt served from cache, rounded; 0 for an empty prompt. */
+/** Share of a prompt served from cache, rounded down so it reads 100% only when nothing was new. */
 export function cachedPercent(cached: number, fresh: number): number {
   const total = cached + fresh;
-  return total > 0 ? Math.round((cached / total) * 100) : 0;
+  return total > 0 ? Math.floor((cached / total) * 100) : 0;
 }
 
 export function formatAgo(ms: number, now: number = Date.now()): string {
