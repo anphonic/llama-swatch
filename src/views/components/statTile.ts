@@ -2,7 +2,8 @@ import { h } from "../../dom";
 
 export interface StatTile {
   el: HTMLElement;
-  update(value: string, sub?: string): void;
+  /** `hint` becomes the tile's tooltip; empty removes it. */
+  update(value: string, sub?: string, hint?: string): void;
 }
 
 export function createStatTile(label: string): StatTile {
@@ -11,9 +12,10 @@ export function createStatTile(label: string): StatTile {
   const el = h("div", { class: "tile" }, h("div", { class: "tile-label" }, label), value, sub);
   return {
     el,
-    update(v, s = "") {
+    update(v, s = "", hint = "") {
       value.textContent = v;
       sub.textContent = s;
+      if (el.title !== hint) el.title = hint;
     },
   };
 }

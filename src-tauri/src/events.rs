@@ -146,6 +146,14 @@ impl InflightTable {
             .collect()
     }
 
+    /// Reply bytes received so far across requests whose reply has started, or `None` when
+    /// nothing is streaming. Bytes, not tokens: llama-swap reports no token count until done.
+    pub fn streamed_bytes(&self) -> Option<i64> {
+        let mut started = self.entries.values().filter(|t| t.entry.response_started).peekable();
+        started.peek()?;
+        Some(started.map(|t| t.entry.resp_bytes).sum())
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
     }
@@ -634,6 +642,20 @@ mod tests {
         feed(&mut h, &odd);
         assert_eq!(h.state(), EventStream::Connected);
         assert!(h.sees_activity(), "an idle server sending new event types keeps models Idle");
+    }
+
+    #[test]
+    fn streamed_bytes_sums_only_started_replies() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        assert_eq!(t.streamed_bytes(), None);
+        t.apply(upsert(entry("1", "a", 0, 0)), now);
+        assert_eq!(t.streamed_bytes(), None, "no reply yet is not streaming");
+        t.apply(upsert(InflightEntry { response_started: true, ..entry("2", "a", 1000, 0) }), now);
+        t.apply(upsert(InflightEntry { response_started: true, ..entry("3", "b", 234, 0) }), now);
+        assert_eq!(t.streamed_bytes(), Some(1234), "summed across models");
+        t.apply(InflightMsg { operation: "remove".into(), id: "2".into(), ..Default::default() }, now);
+        assert_eq!(t.streamed_bytes(), Some(234));
     }
 
     #[test]

@@ -79,6 +79,20 @@ export interface Snapshot {
   eventStream: EventStream;
   /** An event on this connection failed to decode since the last one that decoded. */
   eventReadFailed: boolean;
+  /** Newest finished request on any model; null before any request or without activity data. */
+  lastRequest: LastRequest | null;
+  /** Reply bytes received so far by requests still streaming; null when none are. */
+  streamedBytes: number | null;
+}
+
+/** Token counts of one finished request. The whole prompt is `inputTokens + cacheTokens`. */
+export interface LastRequest {
+  model: string;
+  /** Prompt tokens processed for this request. */
+  inputTokens: number;
+  /** Prompt tokens reused from the cache. */
+  cacheTokens: number;
+  outputTokens: number;
 }
 
 export interface Thresholds {

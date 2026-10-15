@@ -49,6 +49,18 @@ pub struct StatsSummary {
     pub prompt: Option<Histogram>,
 }
 
+/// Token counts of the newest finished request on any model, from `/api/metrics/activity`.
+/// `input_tokens` are newly processed prompt tokens and `cache_tokens` are prompt tokens reused
+/// from the cache, so the whole prompt is their sum.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastRequest {
+    pub model: String,
+    pub input_tokens: i64,
+    pub cache_tokens: i64,
+    pub output_tokens: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -66,6 +78,9 @@ pub struct Snapshot {
     /// badge say "arrived but couldn't be read" instead of "nothing read yet". Only this flag
     /// leaves Rust, never payload or error text.
     pub event_read_failed: bool,
+    pub last_request: Option<LastRequest>,
+    /// Reply bytes received so far by requests still streaming; `None` when none are.
+    pub streamed_bytes: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -222,6 +237,13 @@ impl MonitorState {
             stats_available: self.stats_available,
             event_stream: self.events.state(),
             event_read_failed: self.events.consecutive_failures() > 0,
+            last_request: self.activity.iter().max_by_key(|a| a.id).map(|a| LastRequest {
+                model: a.model.clone(),
+                input_tokens: a.tokens.input_tokens,
+                cache_tokens: a.tokens.cache_tokens,
+                output_tokens: a.tokens.output_tokens,
+            }),
+            streamed_bytes: self.inflight.streamed_bytes(),
         }
     }
 
@@ -373,6 +395,39 @@ mod tests {
         assert_eq!(h.first(), Some(&6.0));
         assert_eq!(h.last(), Some(&35.0));
         assert_eq!(card(&s, "a").last_request_at_ms, Some(WALL));
+    }
+
+    #[test]
+    fn last_request_is_the_newest_id_across_models() {
+        let t0 = Instant::now();
+        let mut m = MonitorState::new("h");
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).last_request, None);
+        let tokens = |input, cache, output| TokenMetrics { input_tokens: input, cache_tokens: cache, output_tokens: output, ..Default::default() };
+        let mut d = data(vec![], None);
+        d.activity = Feature::Available(vec![
+            ActivityEntry { id: 7, model: "b".into(), tokens: tokens(120, 512, 80), ..Default::default() },
+            ActivityEntry { id: 9, model: "a".into(), tokens: tokens(812, 0, 400), ..Default::default() },
+            ActivityEntry { id: 8, model: "b".into(), tokens: tokens(1, 2, 3), ..Default::default() },
+        ]);
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert_eq!(
+            s.last_request,
+            Some(LastRequest { model: "a".into(), input_tokens: 812, cache_tokens: 0, output_tokens: 400 })
+        );
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["lastRequest"], serde_json::json!({"model":"a","inputTokens":812,"cacheTokens":0,"outputTokens":400}));
+    }
+
+    #[test]
+    fn streamed_bytes_follow_the_event_stream() {
+        let (mut m, t0) = busy_on_live_stream();
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).streamed_bytes, None, "reply not started");
+        let req = InflightEntry { id: "1".into(), model: "a".into(), resp_bytes: 4096, response_started: true, ..Default::default() };
+        m.apply_inflight(InflightMsg { operation: "upsert".into(), request: Some(req), ..Default::default() }, t0);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).streamed_bytes, Some(4096));
+        m.events_disconnected();
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).streamed_bytes, None, "dropped with the table");
     }
 
     fn idle_with_request(ready_for: u64, last_request_ms: i64) -> Snapshot {
@@ -545,7 +600,7 @@ mod tests {
         let v = serde_json::to_value(m.snapshot(t0, WALL, &Thresholds::default())).unwrap();
         for key in [
             "host", "connection", "lastOkMs", "version", "versionNote", "models", "stats", "statsAvailable", "eventStream",
-            "eventReadFailed",
+            "eventReadFailed", "lastRequest", "streamedBytes",
         ] {
             assert!(v.get(key).is_some(), "missing {key}: {v}");
         }

@@ -20,6 +20,21 @@ export function formatCount(n: number): string {
   return String(n);
 }
 
+/** Byte counts in powers of 1024: `512 B`, `14.2 KB`, `3.1 MB`. */
+export function formatBytes(n: number): string {
+  const units: [string, number][] = [["GB", 1024 ** 3], ["MB", 1024 ** 2], ["KB", 1024]];
+  for (const [unit, size] of units) {
+    if (n >= size) return `${(n / size).toFixed(1)} ${unit}`;
+  }
+  return `${n} B`;
+}
+
+/** Share of a prompt served from cache, rounded; 0 for an empty prompt. */
+export function cachedPercent(cached: number, fresh: number): number {
+  const total = cached + fresh;
+  return total > 0 ? Math.round((cached / total) * 100) : 0;
+}
+
 export function formatAgo(ms: number, now: number = Date.now()): string {
   return `${formatDuration((now - ms) / 1000)} ago`;
 }
