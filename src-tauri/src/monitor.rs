@@ -49,6 +49,20 @@ pub struct StatsSummary {
     pub prompt: Option<Histogram>,
 }
 
+/// Token counts of the newest finished request on any model, from `/api/metrics/activity`.
+/// Shown as llama-swap reports them: depending on the upstream, `input_tokens` is either the
+/// whole prompt (OpenAI `usage.prompt_tokens`, which counts cached tokens too) or only newly
+/// processed tokens (llama.cpp `timings.prompt_n`), so `input_tokens + cache_tokens` is not
+/// necessarily the prompt size.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastRequest {
+    pub model: String,
+    pub input_tokens: i64,
+    pub cache_tokens: i64,
+    pub output_tokens: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -66,6 +80,9 @@ pub struct Snapshot {
     /// badge say "arrived but couldn't be read" instead of "nothing read yet". Only this flag
     /// leaves Rust, never payload or error text.
     pub event_read_failed: bool,
+    pub last_request: Option<LastRequest>,
+    /// Reply bytes received so far by requests still streaming; `None` when none are.
+    pub streamed_bytes: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -79,6 +96,9 @@ pub struct MonitorState {
     stats: Option<StatsResponse>,
     stats_available: bool,
     activity: Vec<ActivityEntry>,
+    /// Activity id and counts of the newest request that reported tokens. Kept across polls so
+    /// it survives scrolling out of the activity window behind token-less rows.
+    last_request: Option<(i64, LastRequest)>,
     inflight: InflightTable,
     events: DecodeHealth,
     /// model id -> (llama-swap state, when we first saw it in that state)
@@ -97,6 +117,7 @@ impl MonitorState {
             stats: None,
             stats_available: true,
             activity: Vec::new(),
+            last_request: None,
             inflight: InflightTable::default(),
             events: DecodeHealth::default(),
             state_since: HashMap::new(),
@@ -130,8 +151,14 @@ impl MonitorState {
                     Feature::Failed => {}
                 }
                 match d.activity {
-                    Feature::Available(a) => self.activity = a,
-                    Feature::Unavailable => self.activity.clear(),
+                    Feature::Available(a) => {
+                        self.activity = a;
+                        self.update_last_request();
+                    }
+                    Feature::Unavailable => {
+                        self.activity.clear();
+                        self.last_request = None;
+                    }
                     Feature::Failed => {}
                 }
             }
@@ -222,6 +249,36 @@ impl MonitorState {
             stats_available: self.stats_available,
             event_stream: self.events.state(),
             event_read_failed: self.events.consecutive_failures() > 0,
+            last_request: self.last_request.as_ref().map(|(_, lr)| lr.clone()),
+            streamed_bytes: self.inflight.streamed_bytes(),
+        }
+    }
+
+    /// Moves `last_request` to the newest request in the activity window that reported any
+    /// tokens. Rows without token data (failed requests, upstreams that report none) are skipped,
+    /// and the kept request stays when only such rows are newer. Ids only grow while llama-swap
+    /// runs, so llama-swap restarted when the window is empty, its newest id is below the kept
+    /// one, or it spans the kept id without that row: the kept request is dropped and the new
+    /// window decides. A restart is missed only when the new ids have all moved past the kept
+    /// one, and then the kept request is still replaced by the next request with tokens. llama-swap sends -1 for
+    /// an unknown count; it is shown as 0.
+    fn update_last_request(&mut self) {
+        let t = |a: &ActivityEntry| (a.tokens.input_tokens.max(0), a.tokens.cache_tokens.max(0), a.tokens.output_tokens.max(0));
+        if let Some((kept, _)) = self.last_request {
+            let oldest = self.activity.iter().map(|a| a.id).min();
+            let newest = self.activity.iter().map(|a| a.id).max();
+            let spans_kept = oldest.is_some_and(|o| o <= kept) && !self.activity.iter().any(|a| a.id == kept);
+            if newest.is_none_or(|n| n < kept) || spans_kept {
+                self.last_request = None;
+            }
+        }
+        let found = self.activity.iter().filter(|a| t(a) != (0, 0, 0)).max_by_key(|a| a.id);
+        if let Some(a) = found {
+            if self.last_request.as_ref().is_none_or(|(kept, _)| a.id > *kept) {
+                let (input_tokens, cache_tokens, output_tokens) = t(a);
+                let lr = LastRequest { model: a.model.clone(), input_tokens, cache_tokens, output_tokens };
+                self.last_request = Some((a.id, lr));
+            }
         }
     }
 
@@ -373,6 +430,85 @@ mod tests {
         assert_eq!(h.first(), Some(&6.0));
         assert_eq!(h.last(), Some(&35.0));
         assert_eq!(card(&s, "a").last_request_at_ms, Some(WALL));
+    }
+
+    #[test]
+    fn last_request_is_the_newest_id_across_models() {
+        let t0 = Instant::now();
+        let mut m = MonitorState::new("h");
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).last_request, None);
+        let tokens = |input, cache, output| TokenMetrics { input_tokens: input, cache_tokens: cache, output_tokens: output, ..Default::default() };
+        let mut d = data(vec![], None);
+        d.activity = Feature::Available(vec![
+            ActivityEntry { id: 7, model: "b".into(), tokens: tokens(120, 512, 80), ..Default::default() },
+            ActivityEntry { id: 9, model: "a".into(), tokens: tokens(812, 0, 400), ..Default::default() },
+            ActivityEntry { id: 8, model: "b".into(), tokens: tokens(1, 2, 3), ..Default::default() },
+            ActivityEntry { id: 10, model: "c".into(), tokens: tokens(0, -1, 0), ..Default::default() },
+        ]);
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        let s = m.snapshot(t0, WALL, &Thresholds::default());
+        assert_eq!(
+            s.last_request,
+            Some(LastRequest { model: "a".into(), input_tokens: 812, cache_tokens: 0, output_tokens: 400 })
+        );
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["lastRequest"], serde_json::json!({"model":"a","inputTokens":812,"cacheTokens":0,"outputTokens":400}));
+
+        let mut d = data(vec![], None);
+        d.activity = Feature::Available(vec![ActivityEntry { id: 11, model: "d".into(), tokens: tokens(812, -1, 5), ..Default::default() }]);
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        let lr = m.snapshot(t0, WALL, &Thresholds::default()).last_request.unwrap();
+        assert_eq!((lr.input_tokens, lr.cache_tokens), (812, 0), "-1 means unknown, never subtracted");
+    }
+
+    #[test]
+    fn last_request_survives_token_less_polls_and_resets_on_restart() {
+        let t0 = Instant::now();
+        let mut m = MonitorState::new("h");
+        let poll = |m: &mut MonitorState, rows: Vec<(i64, i64)>| {
+            let mut d = data(vec![], None);
+            d.activity = Feature::Available(
+                rows.into_iter()
+                    .map(|(id, out)| ActivityEntry {
+                        id,
+                        model: "a".into(),
+                        tokens: TokenMetrics { output_tokens: out, ..Default::default() },
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+            m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+            m.snapshot(t0, WALL, &Thresholds::default()).last_request.map(|lr| lr.output_tokens)
+        };
+        assert_eq!(poll(&mut m, vec![(5, 40)]), Some(40));
+        assert_eq!(poll(&mut m, vec![(6, 0), (7, -1)]), Some(40), "kept while only token-less rows are in the window");
+        assert_eq!(poll(&mut m, vec![(8, 9)]), Some(9));
+        assert_eq!(poll(&mut m, vec![(8, 9)]), Some(9), "newest id equal to the kept one");
+        let mut d = data(vec![], None);
+        d.activity = Feature::Failed;
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).last_request.map(|lr| lr.output_tokens), Some(9));
+        assert_eq!(poll(&mut m, vec![(8, 9), (9, 0)]), Some(9));
+        assert_eq!(poll(&mut m, vec![(5, 6), (9, 0), (10, 0)]), Some(6), "window spans the kept id without it: restarted");
+        assert_eq!(poll(&mut m, vec![(1, 0)]), None, "ids went backwards: llama-swap restarted");
+        assert_eq!(poll(&mut m, vec![(2, 3)]), Some(3));
+        assert_eq!(poll(&mut m, vec![]), None, "empty window after a restart");
+        assert_eq!(poll(&mut m, vec![(1, 4)]), Some(4));
+        let mut d = data(vec![], None);
+        d.activity = Feature::Unavailable;
+        m.apply_poll(PollOutcome::Ok(d), t0, WALL);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).last_request, None);
+    }
+
+    #[test]
+    fn streamed_bytes_follow_the_event_stream() {
+        let (mut m, t0) = busy_on_live_stream();
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).streamed_bytes, None, "reply not started");
+        let req = InflightEntry { id: "1".into(), model: "a".into(), resp_bytes: 4096, response_started: true, ..Default::default() };
+        m.apply_inflight(InflightMsg { operation: "upsert".into(), request: Some(req), ..Default::default() }, t0);
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).streamed_bytes, Some(4096));
+        m.events_disconnected();
+        assert_eq!(m.snapshot(t0, WALL, &Thresholds::default()).streamed_bytes, None, "dropped with the table");
     }
 
     fn idle_with_request(ready_for: u64, last_request_ms: i64) -> Snapshot {
@@ -545,7 +681,7 @@ mod tests {
         let v = serde_json::to_value(m.snapshot(t0, WALL, &Thresholds::default())).unwrap();
         for key in [
             "host", "connection", "lastOkMs", "version", "versionNote", "models", "stats", "statsAvailable", "eventStream",
-            "eventReadFailed",
+            "eventReadFailed", "lastRequest", "streamedBytes",
         ] {
             assert!(v.get(key).is_some(), "missing {key}: {v}");
         }

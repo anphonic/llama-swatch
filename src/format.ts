@@ -20,6 +20,16 @@ export function formatCount(n: number): string {
   return String(n);
 }
 
+/** Byte counts in powers of 1024: `512 B`, `14.2 KB`, `3.1 MB`. */
+export function formatBytes(n: number): string {
+  const units: [string, number][] = [["GB", 1024 ** 3], ["MB", 1024 ** 2], ["KB", 1024]];
+  for (const [unit, size] of units) {
+    // Compare after rounding so 1,048,575 B reads "1.0 MB", not "1024.0 KB".
+    if (Math.round((n / size) * 10) >= 10) return `${(n / size).toFixed(1)} ${unit}`;
+  }
+  return `${n} B`;
+}
+
 export function formatAgo(ms: number, now: number = Date.now()): string {
   return `${formatDuration((now - ms) / 1000)} ago`;
 }
