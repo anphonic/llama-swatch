@@ -19,7 +19,7 @@ export interface Dashboard {
   destroy(): void;
 }
 
-const PILL: Record<ModelState["kind"], string> = {
+export const PILL: Record<ModelState["kind"], string> = {
   notLoaded: "Not loaded",
   loading: "Loading",
   idle: "Idle",
@@ -47,7 +47,7 @@ const EVENTS_BADGE: Record<EventStream, { text: string; title: string }> = {
 const CONNECTED_READ_FAILED_TITLE =
   "Connected: events arrived but couldn't be read yet, so Busy/Stalled can't be shown until one is read.";
 
-const CONN_TEXT: Record<Connection["kind"], string> = {
+export const CONN_TEXT: Record<Connection["kind"], string> = {
   connecting: "Connecting…",
   connected: "Connected",
   unauthorized: "Unauthorized",

@@ -34,7 +34,6 @@ function render() {
   const root = document.documentElement;
   if (effective === "unknown") delete root.dataset.theme;
   else root.dataset.theme = effective;
-  root.dataset.layout = skin?.layout ?? "full";
   paint(effective);
   // Title bar / window decorations; null hands it back to the OS.
   getCurrentWindow()

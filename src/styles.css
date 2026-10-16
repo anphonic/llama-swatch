@@ -293,3 +293,26 @@ input, .field select {
 }
 .ctx-item { display: block; width: 100%; text-align: left; border: 0; padding: 6px 10px; }
 .ctx-item:hover, .ctx-item:focus-visible { background: color-mix(in srgb, var(--blue) 15%, transparent); outline: none; }
+
+:root[data-layout="mini"] { scrollbar-gutter: auto; overflow: hidden; }
+:root[data-layout="mini"] body, :root[data-layout="mini"] #app { margin: 0; padding: 0; }
+.mini { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 4px 0 8px; background: var(--panel); border: 1px solid var(--border); position: relative; user-select: none; white-space: nowrap; }
+.mini-icon { width: 18px; height: 18px; flex: none; }
+.mini-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mini-word { color: var(--muted); flex: none; }
+.mini-more { color: var(--muted); font-size: 12px; flex: none; }
+.mini-gap { flex: 1; align-self: stretch; }
+.mini-btn { border: 0; background: transparent; width: 28px; height: 28px; padding: 0; flex: none; }
+.mini-btn:hover { background: var(--track); }
+.mini .dot { width: 10px; height: 10px; }
+.mini[data-state="idle"] .dot, .mini[data-state="loaded"] .dot { background: var(--green); }
+.mini[data-state="busy"] .dot { background: var(--blue); }
+.mini[data-state="loading"] .dot, .mini[data-state="unloading"] .dot { background: var(--amber); }
+.mini[data-state="stalled"] .dot { background: var(--red); }
+.mini[data-state="stalled"] .mini-word { color: var(--red); }
+.mini[data-conn="unreachable"] .mini-name { color: var(--amber-text); }
+.mini[data-conn="unauthorized"] .mini-name, .mini[data-conn="error"] .mini-name { color: var(--red); }
+/* The window is only 36 px tall, so the menu is one row laid over the strip, not a dropdown. */
+.mini-menu { position: absolute; inset: 0; display: flex; gap: 4px; align-items: center; justify-content: center; background: var(--panel); z-index: 10; }
+.mini-menu[hidden] { display: none; }
+.mini-menu button { height: 28px; padding: 0 10px; }
