@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::api::ActivityRow;
@@ -222,6 +222,23 @@ pub fn set_skin(state: State<'_, AppState>, skin: String, full: bool) -> Result<
         Ok(true) => Ok(()),
         Ok(false) => Err("the settings file could not be read".into()),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Switches the main window between the full dashboard and the Mini strip. Done here rather
+/// than from the webview, so the webview needs no resize/decoration permissions.
+#[tauri::command]
+pub fn set_layout(app: AppHandle, state: State<'_, AppState>, mini: bool) -> Result<(), String> {
+    let w = app.get_webview_window(crate::window::MAIN_LABEL).ok_or("no main window")?;
+    if mini {
+        if let Some(b) = crate::window::enter_mini(&w).map_err(|e| e.to_string())? {
+            // Not configured yet: nothing to save, and the strip still works this session.
+            config::save_full_bounds(&state.config_path, Some(b)).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    } else {
+        let saved = load_settings(&state.config_path).and_then(|s| s.full_bounds);
+        crate::window::leave_mini(&w, saved).map_err(|e| e.to_string())
     }
 }
 
