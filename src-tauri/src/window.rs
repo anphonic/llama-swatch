@@ -106,12 +106,19 @@ pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool, mini: b
         let _ = w.set_min_size(None::<Size>);
         let _ = w.set_decorations(false);
         let _ = w.set_resizable(false);
+    } else {
+        // So the restore applies the saved size unclamped: the 400 px minimum would otherwise
+        // stretch a saved strip to exactly the minimum, which looks like a real window there.
+        let _ = w.set_min_size(None::<Size>);
     }
     let _ = w.restore_state(STATE_FLAGS);
     if mini {
         let _ = w.set_size(LogicalSize::new(MINI_WIDTH, MINI_HEIGHT));
-    } else if is_strip(&w) {
-        let _ = place_full(&w, full_bounds);
+    } else {
+        if is_strip(&w) {
+            let _ = place_full(&w, full_bounds);
+        }
+        let _ = w.set_min_size(Some(FULL_MIN));
     }
     if always_on_top {
         // Unsupported on some Linux/Wayland compositors; stay quiet.
@@ -123,12 +130,16 @@ pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool, mini: b
     let _ = w.show();
 }
 
-/// The restored window is at or below the full layout's minimum height: a saved Mini strip,
-/// which the decorated window's minimum clamps up to exactly that height (plus 1 px of slack
-/// for fractional-scale rounding).
+/// Whether a restored inner height (physical px) is below the full layout's minimum: a saved
+/// Mini strip. A window sitting exactly at the minimum is a real full window.
+fn is_strip_height(inner_h: u32, scale: f64) -> bool {
+    f64::from(inner_h) < MIN_INNER_HEIGHT_LOGICAL * scale
+}
+
+/// The restored window is a leftover Mini strip (see `prepare`, which restores unclamped).
 fn is_strip(w: &tauri::WebviewWindow) -> bool {
     let (Ok(inner), Ok(scale)) = (w.inner_size(), w.scale_factor()) else { return false };
-    f64::from(inner.height) <= MIN_INNER_HEIGHT_LOGICAL * scale + 1.0
+    is_strip_height(inner.height, scale)
 }
 
 fn fit_first_launch(w: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -159,6 +170,15 @@ mod tests {
         assert_eq!(fit_inner_height(770, 802, 802, 400), 770, "exact fit");
         assert_eq!(fit_inner_height(770, 802, 720, 400), 688, "shrinks by the overflow");
         assert_eq!(fit_inner_height(770, 802, 300, 400), 400, "never below the minimum");
+    }
+
+    #[test]
+    fn strip_height_cases() {
+        assert!(is_strip_height(36, 1.0), "strip at 100%");
+        assert!(is_strip_height(54, 1.5), "strip at 150%");
+        assert!(!is_strip_height(400, 1.0), "exactly the minimum");
+        assert!(!is_strip_height(600, 1.5), "exactly the minimum at 150%");
+        assert!(!is_strip_height(1100, 1.25), "normal window");
     }
 
     #[test]
