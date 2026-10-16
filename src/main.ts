@@ -12,7 +12,7 @@ let updateCheck: Promise<UpdateInfo | null> | null = null;
 /** null until listed, or if listing failed; Settings then offers no picker. */
 let skins: SkinList | null = null;
 
-function showSetup(view: SettingsView) {
+async function showSetup(view: SettingsView) {
   dashboard?.destroy();
   dashboard = null;
   const cancel = view.configured ? () => void showDashboard(view) : undefined;
@@ -23,6 +23,8 @@ function showSetup(view: SettingsView) {
     if (skins) applySkin(resolveSkin(skins, saved.settings.skin).skin);
     void showDashboard(saved);
   };
+  // The backend rescans the skins folder whenever Settings opens.
+  skins = await listSkins().catch(() => skins);
   root.replaceChildren(renderSetup(view, skins, onSaved, cancel));
 }
 
@@ -30,7 +32,7 @@ async function showDashboard(view: SettingsView) {
   dashboard?.destroy();
   const current = createDashboard(view.settings, async () => {
     try {
-      showSetup(await getSettings());
+      await showSetup(await getSettings());
     } catch (e) {
       console.error("failed to load settings:", String(e));
     }
@@ -66,7 +68,7 @@ async function boot() {
   });
   if (skins) applySkin(resolveSkin(skins, view.settings.skin).skin);
   if (view.configured) await showDashboard(view);
-  else showSetup(view);
+  else await showSetup(view);
 }
 
 boot().catch((e) => {

@@ -222,7 +222,7 @@ export function renderSetup(
       fillSkins(skinSelect.value);
       const picked = skinById(skinSelect.value);
       if (picked) applySkin(picked);
-      fillInfo(null);
+      fillInfo(resolveSkin(next, s.skin).note);
     } catch (err) {
       if (alive()) showStatus(String(err), "error");
     } finally {

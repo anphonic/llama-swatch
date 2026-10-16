@@ -91,6 +91,25 @@ a request that was already running may show as Idle until it sends output or fin
   dark-style switch through the XDG desktop portal (GNOME, KDE Plasma and most other desktops with
   a portal), falling back to the GTK theme name; if neither says, the app shows light. Pick Dark
   or Light to override it.
+- **Skin** in settings picks the colours and layout: Standard (the default), High contrast, Muted
+  (low-saturation), or Minimal (Standard colours in a compact strip layout). Your own skins are
+  JSON files: drop `*.json` into the skins folder shown in settings (the Copy button copies its
+  path), then press Rescan. Skins follow the Theme setting, so each has a light and a dark half.
+
+  ```json
+  {
+    "name": "Night Owl Mini",
+    "layout": "mini",
+    "light": { "bg": "#f6f7f9", "panel": "#ffffff", "text": "#1b1f24" },
+    "dark":  { "bg": "#011627", "panel": "#0b2942", "text": "#d6deeb" }
+  }
+  ```
+
+  `name` is required (at most 40 characters). `layout` is `full` or `mini` (default `full`).
+  Colours are `#rgb` or `#rrggbb` only, from these 12 keys: `bg`, `panel`, `text`, `muted`,
+  `border`, `track`, `grey`, `green`, `amber`, `amberText`, `blue`, `red`. Any key you leave out
+  falls back to Standard, a missing `dark` block reuses `light`, and unknown keys are ignored.
+  Files over 16 KB are skipped; skipped files are listed in settings with the reason.
 
 ## Install
 
