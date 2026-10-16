@@ -89,6 +89,8 @@ pub fn apply_settings(
 ) -> Result<(Settings, Option<String>), ConfigError> {
     let current = load_settings(path);
     let settings = settings.sanitized()?;
+    // The form never edits the saved window rect and may hold a stale copy.
+    let settings = Settings { full_bounds: current.as_ref().and_then(|c| c.full_bounds), ..settings };
     let old_url = current.as_ref().map(|c| c.base_url.clone()).filter(|u| *u != settings.base_url);
 
     let key = match api_key.map(|k| k.trim().to_string()) {
@@ -204,6 +206,23 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsView {
 #[tauri::command]
 pub fn set_always_on_top(state: State<'_, AppState>, on: bool) -> Result<(), String> {
     config::save_always_on_top(&state.config_path, on).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Built-in skins plus valid files from `<config dir>/skins`. File I/O, so async (off the main thread).
+#[tauri::command]
+pub async fn list_skins(state: State<'_, AppState>) -> Result<crate::skins::SkinList, String> {
+    let dir = state.config_path.parent().map(|d| d.join("skins")).ok_or("no config folder")?;
+    Ok(crate::skins::list(&dir))
+}
+
+/// Saves only the skin choice (the Mini menu's "Full dashboard" works while llama-swap is down).
+#[tauri::command]
+pub fn set_skin(state: State<'_, AppState>, skin: String, full: bool) -> Result<(), String> {
+    match config::save_skin(&state.config_path, &skin, full) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("the settings file could not be read".into()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// The desktop's light/dark preference, for the "System" theme. Linux only (see `theme`);
@@ -442,6 +461,18 @@ mod tests {
             assert!(!url_matches_saved(other, Some(&saved)), "{other:?}");
         }
         assert!(!url_matches_saved("http://box:8080", None), "nothing saved");
+    }
+
+    #[test]
+    fn apply_settings_keeps_saved_full_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = MemoryStore::default();
+        let b = crate::config::Bounds { x: 1, y: 2, width: 3, height: 4 };
+        config::save_settings(&path, &Settings { full_bounds: Some(b), ..settings("http://box:8080") }).unwrap();
+        let (saved, _) = apply_settings(&path, &store, settings("http://box:8080"), None).unwrap();
+        assert_eq!(saved.full_bounds, Some(b));
+        assert_eq!(load_settings(&path).unwrap().full_bounds, Some(b));
     }
 
     #[test]

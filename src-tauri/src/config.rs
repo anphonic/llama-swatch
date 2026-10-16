@@ -38,6 +38,45 @@ pub struct Settings {
     /// Colour scheme chosen in settings. `System` follows the OS.
     #[serde(deserialize_with = "lenient_theme")]
     pub theme: Theme,
+    /// Selected skin id (`builtin:<name>` or `file:<file name>`).
+    #[serde(deserialize_with = "lenient_skin")]
+    pub skin: String,
+    /// Last full-layout skin used; the Mini menu's "Full dashboard" goes back to it.
+    #[serde(deserialize_with = "lenient_skin")]
+    pub last_full_skin: String,
+    /// Mini rotates through loaded models instead of showing only the busiest.
+    #[serde(deserialize_with = "lenient")]
+    pub mini_cycle: bool,
+    /// Window rect to restore when leaving Mini. Written only by `set_layout`.
+    #[serde(deserialize_with = "lenient")]
+    pub full_bounds: Option<Bounds>,
+}
+
+/// Saved window rect for leaving Mini, physical pixels (outer position, inner size).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Wrong-typed value (hand edit, newer version) reads as the default instead of making the
+/// whole settings file unreadable. Same idea as `lenient_theme`.
+fn lenient<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    Ok(T::deserialize(serde_json::Value::deserialize(d)?).unwrap_or_default())
+}
+
+fn lenient_skin<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) if !s.trim().is_empty() => s,
+        _ => crate::skins::STANDARD_ID.to_string(),
+    })
 }
 
 impl Default for Settings {
@@ -49,6 +88,10 @@ impl Default for Settings {
             always_on_top: false,
             check_for_updates: None,
             theme: Theme::System,
+            skin: crate::skins::STANDARD_ID.into(),
+            last_full_skin: crate::skins::STANDARD_ID.into(),
+            mini_cycle: false,
+            full_bounds: None,
         }
     }
 }
@@ -175,6 +218,27 @@ pub fn save_check_for_updates(path: &Path, on: bool) -> Result<bool, ConfigError
     match load_settings(path) {
         Some(s) if s.check_for_updates == Some(on) => Ok(true),
         Some(s) => save_settings(path, &Settings { check_for_updates: Some(on), ..s }).map(|()| true),
+        None => Ok(false),
+    }
+}
+
+/// Persists only the skin choice, like `save_always_on_top`. `full`: the skin uses the full
+/// layout, so it also becomes the one "Full dashboard" returns to.
+pub fn save_skin(path: &Path, skin: &str, full: bool) -> Result<bool, ConfigError> {
+    match load_settings(path) {
+        Some(s) => {
+            let last_full_skin = if full { skin.to_string() } else { s.last_full_skin.clone() };
+            save_settings(path, &Settings { skin: skin.to_string(), last_full_skin, ..s }).map(|()| true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Persists only the full-layout window rect.
+pub fn save_full_bounds(path: &Path, full_bounds: Option<Bounds>) -> Result<bool, ConfigError> {
+    match load_settings(path) {
+        Some(s) if s.full_bounds == full_bounds => Ok(true),
+        Some(s) => save_settings(path, &Settings { full_bounds, ..s }).map(|()| true),
         None => Ok(false),
     }
 }
@@ -318,7 +382,7 @@ mod tests {
     fn save_then_load_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
-        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, check_for_updates: Some(false), theme: Theme::Dark };
+        let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, check_for_updates: Some(false), theme: Theme::Dark, ..Default::default() };
         save_settings(&path, &s).unwrap();
         assert_eq!(load_settings(&path), Some(s));
         assert!(!path.with_extension("json.tmp").exists(), "temp file is renamed away");
@@ -429,5 +493,56 @@ mod tests {
         store.delete("a").unwrap();
         store.delete("a").unwrap(); // deleting a missing key is fine
         assert_eq!(store.get("a").unwrap(), None);
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("swatch-cfg-{name}-{}.json", std::process::id()))
+    }
+
+    #[test]
+    fn skin_fields_default_for_old_files() {
+        let p = tmp("old-file");
+        std::fs::write(&p, r#"{"baseUrl":"http://llama.example.test:8080","theme":"dark"}"#).unwrap();
+        let s = load_settings(&p).unwrap();
+        assert_eq!(s.skin, "builtin:standard");
+        assert_eq!(s.last_full_skin, "builtin:standard");
+        assert!(!s.mini_cycle);
+        assert_eq!(s.full_bounds, None);
+    }
+
+    #[test]
+    fn bad_skin_values_do_not_break_the_file() {
+        let p = tmp("bad-skin");
+        std::fs::write(
+            &p,
+            r#"{"baseUrl":"http://llama.example.test:8080","skin":5,"lastFullSkin":null,"miniCycle":"yes","fullBounds":{"x":"a"}}"#,
+        )
+        .unwrap();
+        let s = load_settings(&p).expect("file must stay readable");
+        assert_eq!(s.skin, "builtin:standard");
+        assert_eq!(s.last_full_skin, "builtin:standard");
+        assert!(!s.mini_cycle);
+        assert_eq!(s.full_bounds, None);
+    }
+
+    #[test]
+    fn save_skin_updates_last_full_only_for_full_skins() {
+        let p = tmp("save-skin");
+        save_settings(&p, &Settings::default()).unwrap();
+        assert!(save_skin(&p, "builtin:minimal", false).unwrap());
+        let s = load_settings(&p).unwrap();
+        assert_eq!((s.skin.as_str(), s.last_full_skin.as_str()), ("builtin:minimal", "builtin:standard"));
+        save_skin(&p, "file:x.json", true).unwrap();
+        let s = load_settings(&p).unwrap();
+        assert_eq!((s.skin.as_str(), s.last_full_skin.as_str()), ("file:x.json", "file:x.json"));
+    }
+
+    #[test]
+    fn save_skin_and_bounds_do_nothing_while_unconfigured() {
+        let p = tmp("unconfigured-skin");
+        let _ = std::fs::remove_file(&p);
+        assert!(!save_skin(&p, "builtin:minimal", false).unwrap());
+        assert!(!save_full_bounds(&p, Some(Bounds { x: 1, y: 2, width: 3, height: 4 })).unwrap());
+        assert!(!p.exists());
     }
 }
