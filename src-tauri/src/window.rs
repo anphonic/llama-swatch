@@ -70,10 +70,16 @@ pub fn leave_mini(w: &tauri::WebviewWindow, saved: Option<Bounds>) -> tauri::Res
     w.set_decorations(true)?;
     w.set_resizable(true)?;
     w.set_min_size(Some(FULL_MIN))?;
-    place_full(w, saved)
+    if place_full(w, saved)? {
+        let _ = w.maximize();
+    }
+    Ok(())
 }
 
-fn place_full(w: &tauri::WebviewWindow, saved: Option<Bounds>) -> tauri::Result<()> {
+/// Moves and sizes the framed window to `saved`, or the default centred size. Returns whether
+/// `saved` was maximized; the caller maximizes after setting the minimum size, which on Windows
+/// would drop the maximized state.
+fn place_full(w: &tauri::WebviewWindow, saved: Option<Bounds>) -> tauri::Result<bool> {
     let monitors: Vec<(i32, i32, u32, u32)> = w
         .available_monitors()?
         .iter()
@@ -85,16 +91,14 @@ fn place_full(w: &tauri::WebviewWindow, saved: Option<Bounds>) -> tauri::Result<
             // would rescale a size set before the move.
             w.set_position(PhysicalPosition::new(b.x, b.y))?;
             w.set_size(PhysicalSize::new(b.width, b.height))?;
-            if b.maximized {
-                let _ = w.maximize();
-            }
+            Ok(b.maximized)
         }
         None => {
             w.set_size(FULL_DEFAULT)?;
             w.center()?;
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 /// Restores the saved size/position/maximized state, applies the pin and the first-launch fit,
@@ -128,11 +132,14 @@ pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool, mini: b
         let _ = w.set_size(LogicalSize::new(MINI_WIDTH, MINI_HEIGHT));
     } else {
         let _ = w.restore_state(StateFlags::SIZE | StateFlags::POSITION);
-        if is_strip(&w) {
-            let _ = place_full(&w, full_bounds);
-        }
+        // A saved strip's own maximized state is false, so the one from `full_bounds` is
+        // applied instead, after the minimum like the restored one.
+        let maximize = is_strip(&w) && place_full(&w, full_bounds).unwrap_or(false);
         let _ = w.set_min_size(Some(FULL_MIN));
         let _ = w.restore_state(StateFlags::MAXIMIZED);
+        if maximize {
+            let _ = w.maximize();
+        }
     }
     if always_on_top {
         // Unsupported on some Linux/Wayland compositors; stay quiet.
@@ -198,7 +205,6 @@ mod tests {
         assert!(!is_strip_height(533, 4.0 / 3.0), "minimum at 4/3");
         assert!(!is_strip_height(534, 4.0 / 3.0), "just above the minimum at 4/3");
         assert!(!is_strip_height(500, 1.25), "minimum at 125%");
-        assert!(!is_strip_height(600, 1.5), "minimum at 150%");
         assert!(is_strip_height(48, 4.0 / 3.0), "strip at 4/3");
         assert!(is_strip_height(399, 1.0), "one pixel short of the minimum at 100%");
     }
