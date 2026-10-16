@@ -9,7 +9,7 @@ let chosen: Theme = "system";
 let desktop: ColorScheme = "unknown";
 let skin: Skin | null = null;
 
-const STANDARD_ID = "builtin:standard";
+export const STANDARD_ID = "builtin:standard";
 const media = window.matchMedia("(prefers-color-scheme: dark)");
 media.addEventListener("change", () => render());
 

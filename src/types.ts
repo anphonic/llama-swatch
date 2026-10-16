@@ -146,6 +146,8 @@ export interface Bounds {
   y: number;
   width: number;
   height: number;
+  /** Maximized when Mini was entered; absent in older settings files. */
+  maximized?: boolean;
 }
 
 /** A newer release on GitHub (update.rs `UpdateInfo`). */

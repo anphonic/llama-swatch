@@ -32,7 +32,7 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
   );
   const strip = h(
     "div",
-    { class: "mini", "data-tauri-drag-region": "" },
+    { class: "mini", role: "group", tabindex: "0", "aria-label": "Llama Swatch Mini", "data-tauri-drag-region": "" },
     icon,
     name,
     dot,
@@ -46,14 +46,32 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
 
   min.addEventListener("click", () => void win.minimize());
   close.addEventListener("click", () => void win.close());
-  const openMenu = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest(".mini-btn, .mini-menu")) return;
-    e.preventDefault();
+  /** What had focus when the menu opened, so Escape can give it back. */
+  let returnFocus: HTMLElement = strip;
+  const openMenu = () => {
+    if (!menu.hidden) return;
+    const active = document.activeElement;
+    returnFocus = active instanceof HTMLElement && active !== document.body && !menu.contains(active) ? active : strip;
     menu.hidden = false;
     (menu.firstElementChild as HTMLElement).focus();
   };
-  strip.addEventListener("dblclick", openMenu);
-  strip.addEventListener("contextmenu", openMenu);
+  strip.addEventListener("dblclick", (e) => {
+    if ((e.target as HTMLElement).closest(".mini-btn, .mini-menu")) return;
+    e.preventDefault();
+    openMenu();
+  });
+  // Always ours, never the WebView's default menu; the context-menu key on a focused button too.
+  strip.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if ((e.target as HTMLElement).closest(".mini-menu")) return;
+    openMenu();
+  });
+  strip.addEventListener("keydown", (e) => {
+    if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      e.preventDefault();
+      openMenu();
+    }
+  });
   menu.addEventListener("click", (e) => {
     const act = (e.target as HTMLElement).dataset.act;
     menu.hidden = true;
@@ -64,8 +82,15 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
     if (!menu.contains(e.target as Node)) menu.hidden = true;
   };
   document.addEventListener("mousedown", hideMenu);
+  // Clicking another app sends no mousedown here.
+  const hideOnBlur = () => {
+    menu.hidden = true;
+  };
+  window.addEventListener("blur", hideOnBlur);
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") menu.hidden = true;
+    if (e.key !== "Escape" || menu.hidden) return;
+    menu.hidden = true;
+    returnFocus.focus();
   };
   document.addEventListener("keydown", onKey);
 
@@ -131,6 +156,7 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
     destroy() {
       if (timer !== null) clearInterval(timer);
       document.removeEventListener("mousedown", hideMenu);
+      window.removeEventListener("blur", hideOnBlur);
       document.removeEventListener("keydown", onKey);
     },
   };

@@ -1,7 +1,7 @@
 import { isSavedUrl, listSkins, saveSettings, testConnection } from "../api";
 import { h } from "../dom";
 import type { Settings, SettingsView, SkinList, TestResult, Theme } from "../types";
-import { applySkin, resolveSkin } from "../theme";
+import { applySkin, resolveSkin, STANDARD_ID } from "../theme";
 import { launchCheckAnswer } from "./dashboard";
 
 export function renderSetup(
@@ -257,8 +257,6 @@ export function renderSetup(
     form,
   );
 }
-
-const STANDARD_ID = "builtin:standard";
 
 const THEMES: ReadonlyArray<[Theme, string]> = [
   ["system", "Match system"],

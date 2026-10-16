@@ -4,7 +4,7 @@ import type { SettingsView, SkinList, UpdateInfo } from "./types";
 import { createDashboard, type Dashboard } from "./views/dashboard";
 import { createMini } from "./views/mini";
 import { renderSetup } from "./views/setup";
-import { applySkin, applyTheme, initTheme, resolveSkin } from "./theme";
+import { applySkin, applyTheme, initTheme, resolveSkin, STANDARD_ID } from "./theme";
 
 const root = document.getElementById("app")!;
 let dashboard: Dashboard | null = null;
@@ -44,7 +44,9 @@ async function showMain(view: SettingsView, forceFull = false) {
   const seq = ++navSeq;
   // forceFull: the saved skin is Mini but switching away failed; show the full view for this session.
   const id = forceFull ? view.settings.lastFullSkin : view.settings.skin;
-  const { skin, note } = skins ? resolveSkin(skins, id) : { skin: null, note: null };
+  let { skin, note } = skins ? resolveSkin(skins, id) : { skin: null, note: null };
+  // A skin file can keep its id but turn into a Mini one; "full" must still be a full layout.
+  if (forceFull && skins && skin?.layout !== "full") ({ skin, note } = resolveSkin(skins, STANDARD_ID));
   if (note) console.warn(note);
   applySkin(skin);
   const mini = !forceFull && skin?.layout === "mini";
@@ -79,7 +81,12 @@ async function showMini(view: SettingsView) {
         const seq = navSeq;
         let saved = true;
         try {
-          await setSkin(view.settings.lastFullSkin, true);
+          // The remembered skin may have been edited into a Mini one (or removed) since.
+          skins = await listSkins().catch(() => skins);
+          let id = view.settings.lastFullSkin;
+          if (skins && resolveSkin(skins, id).skin.layout !== "full") id = STANDARD_ID;
+          else if (skins) id = resolveSkin(skins, id).skin.id;
+          await setSkin(id, true);
         } catch (e) {
           saved = false;
           console.error("failed to restore the full skin:", String(e));

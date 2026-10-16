@@ -297,6 +297,7 @@ input, .field select {
 :root[data-layout="mini"] { scrollbar-gutter: auto; overflow: hidden; }
 :root[data-layout="mini"] body, :root[data-layout="mini"] #app { margin: 0; padding: 0; }
 .mini { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 4px 0 8px; background: var(--panel); border: 1px solid var(--border); position: relative; user-select: none; white-space: nowrap; }
+.mini:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .mini-icon { width: 18px; height: 18px; flex: none; }
 .mini-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mini-word { color: var(--muted); flex: none; }
