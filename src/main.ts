@@ -25,6 +25,7 @@ async function showSetup(view: SettingsView) {
   };
   // The backend rescans the skins folder whenever Settings opens.
   skins = await listSkins().catch(() => skins);
+  if (skins) applySkin(resolveSkin(skins, view.settings.skin).skin);
   root.replaceChildren(renderSetup(view, skins, onSaved, cancel));
 }
 

@@ -17,16 +17,37 @@ media.addEventListener("change", () => render());
 const KEYS = ["bg", "panel", "text", "muted", "border", "track", "grey", "green", "amber", "amberText", "blue", "red"];
 const cssVar = (key: string) => "--" + key.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
 
+function luminance(hex: string): number {
+  const value = hex.slice(1);
+  const channels = value.length === 3
+    ? [...value].map((c) => Number.parseInt(c + c, 16))
+    : [0, 2, 4].map((i) => Number.parseInt(value.slice(i, i + 2), 16));
+  const linear = channels.map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function contrast(a: number, b: number): number {
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
 function paint(effective: ColorScheme) {
   const style = document.documentElement.style;
   // Standard is what styles.css already says; leave it to the stylesheet.
   if (!skin || skin.id === STANDARD_ID) {
     for (const k of KEYS) style.removeProperty(cssVar(k));
-    return;
+    const blue = getComputedStyle(document.documentElement).getPropertyValue("--blue").trim();
+    const blueLuminance = luminance(blue);
+    style.setProperty("--blue-text", contrast(blueLuminance, 1) >= contrast(blueLuminance, 0) ? "#ffffff" : "#000000");
+  } else {
+    const dark = effective === "unknown" ? media.matches : effective === "dark";
+    const p = dark ? skin.dark : skin.light;
+    for (const k of KEYS) if (p[k]) style.setProperty(cssVar(k), p[k]);
+    const blueLuminance = luminance(p.blue);
+    style.setProperty("--blue-text", contrast(blueLuminance, 1) >= contrast(blueLuminance, 0) ? "#ffffff" : "#000000");
   }
-  const dark = effective === "unknown" ? media.matches : effective === "dark";
-  const p = dark ? skin.dark : skin.light;
-  for (const k of KEYS) if (p[k]) style.setProperty(cssVar(k), p[k]);
 }
 
 function render() {
