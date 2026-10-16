@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { h } from "../dom";
 import type { ModelCard, Settings, Snapshot } from "../types";
-import { CONN_TEXT, PILL, type Dashboard } from "./dashboard";
+import { bannerText, CONN_TEXT, PILL, type Dashboard } from "./dashboard";
 
 const CYCLE_MS = 4000;
 
@@ -77,6 +77,9 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
     const s = last;
     if (!s) return;
     strip.dataset.conn = s.connection.kind;
+    const tip = bannerText(s.connection, s.lastOkMs);
+    if (tip !== null) strip.title = tip;
+    else strip.removeAttribute("title");
     if (s.connection.kind !== "connected" && s.connection.kind !== "connecting") {
       name.textContent = CONN_TEXT[s.connection.kind];
       word.textContent = "";
@@ -87,7 +90,7 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
     }
     const order = s.miniOrder;
     if (order.length === 0) {
-      name.textContent = "No model loaded";
+      name.textContent = s.connection.kind === "connecting" ? CONN_TEXT.connecting : "No model loaded";
       word.textContent = more.textContent = "";
       more.removeAttribute("title");
       strip.removeAttribute("data-state");

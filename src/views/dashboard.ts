@@ -47,6 +47,14 @@ const EVENTS_BADGE: Record<EventStream, { text: string; title: string }> = {
 const CONNECTED_READ_FAILED_TITLE =
   "Connected: events arrived but couldn't be read yet, so Busy/Stalled can't be shown until one is read.";
 
+/** The banner wording for a connection state, or null when there is none to show. */
+export function bannerText(c: Connection, lastOkMs: number | null): string | null {
+  const seen = lastOkMs ? ` · last seen ${formatAgo(lastOkMs)}` : "";
+  if (c.kind === "unauthorized") return "llama-swap rejected the API key.";
+  if (c.kind === "unreachable" || c.kind === "error") return `${c.message}${seen}`;
+  return null;
+}
+
 export const CONN_TEXT: Record<Connection["kind"], string> = {
   connecting: "Connecting…",
   connected: "Connected",
@@ -590,9 +598,8 @@ export function createDashboard(settings: Settings, onOpenSettings: () => void):
     live.classList.toggle("badge-live", s.eventStream === "live");
     live.classList.toggle("badge-warn", s.eventStream === "unreadable");
 
-    const seen = s.lastOkMs ? ` · last seen ${formatAgo(s.lastOkMs)}` : "";
-    if (c.kind === "unauthorized") showBanner("llama-swap rejected the API key.", true);
-    else if (c.kind === "unreachable" || c.kind === "error") showBanner(`${c.message}${seen}`, false);
+    const text = bannerText(c, s.lastOkMs);
+    if (text !== null) showBanner(text, c.kind === "unauthorized");
     else banner.hidden = true;
   }
 

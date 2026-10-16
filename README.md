@@ -95,6 +95,9 @@ a request that was already running may show as Idle until it sends output or fin
   (low-saturation), or Minimal (Standard colours in a compact strip layout). Your own skins are
   JSON files: drop `*.json` into the skins folder shown in settings (the Copy button copies its
   path), then press Rescan. Skins follow the Theme setting, so each has a light and a dark half.
+  With the Minimal skin (or any skin with `"layout": "mini"`) the window becomes a one-line strip;
+  double-click or right-click it for Full dashboard or Settings. The "Cycle through loaded models in
+  Mini" option rotates through every loaded model every 4 s.
 
   ```json
   {
