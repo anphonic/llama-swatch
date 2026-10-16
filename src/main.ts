@@ -1,31 +1,39 @@
 import "./styles.css";
-import { checkForUpdate, getSettings, getSnapshot, onSnapshot } from "./api";
-import type { SettingsView, UpdateInfo } from "./types";
+import { checkForUpdate, getSettings, getSnapshot, listSkins, onSnapshot } from "./api";
+import type { SettingsView, SkinList, UpdateInfo } from "./types";
 import { createDashboard, type Dashboard } from "./views/dashboard";
 import { renderSetup } from "./views/setup";
-import { applyTheme, initTheme } from "./theme";
+import { applySkin, applyTheme, initTheme, resolveSkin } from "./theme";
 
 const root = document.getElementById("app")!;
 let dashboard: Dashboard | null = null;
 /** Started once per launch, by the first dashboard shown with the setting on. */
 let updateCheck: Promise<UpdateInfo | null> | null = null;
+/** null until listed, or if listing failed; Settings then offers no picker. */
+let skins: SkinList | null = null;
 
-function showSetup(view: SettingsView) {
+async function showSetup(view: SettingsView) {
   dashboard?.destroy();
   dashboard = null;
   const cancel = view.configured ? () => void showDashboard(view) : undefined;
-  const onSaved = (saved: SettingsView) => {
+  const onSaved = async (saved: SettingsView) => {
     applyTheme(saved.settings.theme);
+    // Settings may have rescanned the folder, so the saved skin can be newer than `skins`.
+    skins = await listSkins().catch(() => skins);
+    if (skins) applySkin(resolveSkin(skins, saved.settings.skin).skin);
     void showDashboard(saved);
   };
-  root.replaceChildren(renderSetup(view, onSaved, cancel));
+  // The backend rescans the skins folder whenever Settings opens.
+  skins = await listSkins().catch(() => skins);
+  if (skins) applySkin(resolveSkin(skins, view.settings.skin).skin);
+  root.replaceChildren(renderSetup(view, skins, onSaved, cancel));
 }
 
 async function showDashboard(view: SettingsView) {
   dashboard?.destroy();
   const current = createDashboard(view.settings, async () => {
     try {
-      showSetup(await getSettings());
+      await showSetup(await getSettings());
     } catch (e) {
       console.error("failed to load settings:", String(e));
     }
@@ -55,8 +63,13 @@ async function boot() {
   await onSnapshot((s) => dashboard?.update(s));
   const view = await getSettings();
   await initTheme(view.settings.theme);
+  skins = await listSkins().catch((e) => {
+    console.error("failed to list skins:", String(e));
+    return null;
+  });
+  if (skins) applySkin(resolveSkin(skins, view.settings.skin).skin);
   if (view.configured) await showDashboard(view);
-  else showSetup(view);
+  else await showSetup(view);
 }
 
 boot().catch((e) => {

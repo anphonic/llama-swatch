@@ -1,12 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ActivityRow, ColorScheme, Settings, SettingsView, Snapshot, TestResult, UpdateInfo } from "./types";
+import type { ActivityRow, ColorScheme, Settings, SettingsView, SkinList, Snapshot, TestResult, UpdateInfo } from "./types";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
 
 /** apiKey: null keeps the saved key, "" removes it, anything else replaces it. */
 export const saveSettings = (settings: Settings, apiKey: string | null) =>
   invoke<SettingsView>("save_settings", { settings, apiKey });
+
+export const listSkins = () => invoke<SkinList>("list_skins");
+
+/** Saves only the skin choice; `full` = it uses the full layout. */
+export const setSkin = (skin: string, full: boolean) => invoke<void>("set_skin", { skin, full });
 
 export const testConnection = (baseUrl: string, apiKey: string | null) =>
   invoke<TestResult>("test_connection", { baseUrl, apiKey });

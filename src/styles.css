@@ -60,7 +60,7 @@ button {
   font: inherit; color: inherit; background: var(--panel);
   border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer;
 }
-button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+button.primary { background: var(--blue); border-color: var(--blue); color: var(--blue-text, #fff); }
 button:disabled { opacity: 0.6; cursor: default; }
 input, .field select {
   font: inherit; color: inherit; background: var(--panel);
@@ -95,7 +95,7 @@ input, .field select {
 .badge-update:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .version-note { color: var(--amber-text); }
 .icon-button { font-size: 18px; padding: 0; width: 36px; height: 32px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
-.icon-button.pin[aria-pressed="true"] { background: var(--blue); border-color: var(--blue); color: #fff; }
+.icon-button.pin[aria-pressed="true"] { background: var(--blue); border-color: var(--blue); color: var(--blue-text, #fff); }
 /* Overlay at the bottom of the window: appearing/disappearing never moves content. */
 .notices {
   position: fixed; left: calc(20px + var(--sbw, 0px)); right: 20px; bottom: 12px; z-index: 5;
@@ -227,6 +227,9 @@ input, .field select {
 .check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .check input { width: auto; }
 .thresholds { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.folder-row { display: flex; gap: 6px; }
+.folder-row input { flex: 1; min-width: 0; }
+.skins-skipped { margin: 4px 0 0; padding-left: 18px; color: var(--amber-text); font-size: 12px; }
 .actions { display: flex; gap: 8px; justify-content: flex-end; }
 .form-status { min-height: 1.4em; margin: 0; }
 .form-status[data-kind="ok"] { color: var(--green); }
@@ -238,7 +241,7 @@ input, .field select {
 .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex: none; }
 .seg { border: 0; border-radius: 0; background: var(--panel); padding: 5px 12px; color: var(--muted); }
 .seg + .seg { border-left: 1px solid var(--border); }
-.seg[aria-pressed="true"] { background: var(--blue); color: #fff; }
+.seg[aria-pressed="true"] { background: var(--blue); color: var(--blue-text, #fff); }
 .history { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 /* Same height as the Models toolbar so the switch never moves what is below it. */
 .history-toolbar { display: flex; align-items: center; gap: 14px; height: 32px; }

@@ -8,6 +8,7 @@ pub mod events;
 pub mod monitor;
 pub mod poller;
 pub mod runtime;
+pub mod skins;
 pub mod sse;
 pub mod state;
 pub mod theme;
@@ -64,6 +65,8 @@ pub fn run() {
             commands::load_model,
             commands::unload_model,
             commands::set_always_on_top,
+            commands::list_skins,
+            commands::set_skin,
             commands::set_check_for_updates,
             commands::check_for_update,
             commands::open_release,
