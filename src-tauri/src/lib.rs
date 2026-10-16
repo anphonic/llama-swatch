@@ -38,12 +38,13 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             let state = commands::AppState::new(dir.join("settings.json"), Arc::new(config::KeyringStore));
             let settings = config::load_settings(&state.config_path);
-            // Saved-state restore, pin, first-launch fit and show; always shows the window,
-            // whatever fails.
+            // Whether the selected skin is a Mini layout (an unknown skin id is not).
             let mini = settings.as_ref().is_some_and(|s| {
                 let list = skins::list(&dir.join("skins"));
                 list.skins.iter().find(|k| k.id == s.skin).is_some_and(|k| k.layout == skins::Layout::Mini)
             });
+            // Saved-state restore, pin, first-launch fit and show; always shows the window,
+            // whatever fails.
             window::prepare(
                 app.handle(),
                 settings.as_ref().is_some_and(|s| s.always_on_top),

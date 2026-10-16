@@ -123,10 +123,12 @@ pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool, mini: b
     let _ = w.show();
 }
 
-/// The restored window is shorter than the full layout's minimum: a saved Mini strip.
+/// The restored window is at or below the full layout's minimum height: a saved Mini strip,
+/// which the decorated window's minimum clamps up to exactly that height (plus 1 px of slack
+/// for fractional-scale rounding).
 fn is_strip(w: &tauri::WebviewWindow) -> bool {
     let (Ok(inner), Ok(scale)) = (w.inner_size(), w.scale_factor()) else { return false };
-    f64::from(inner.height) < MIN_INNER_HEIGHT_LOGICAL * scale
+    f64::from(inner.height) <= MIN_INNER_HEIGHT_LOGICAL * scale + 1.0
 }
 
 fn fit_first_launch(w: &tauri::WebviewWindow) -> tauri::Result<()> {
