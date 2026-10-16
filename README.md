@@ -78,9 +78,9 @@ a request that was already running may show as Idle until it sends output or fin
 - Below the models, four tiles summarise traffic:
   - **Requests**: requests since llama-swap started.
   - **Last input**: prompt tokens of the newest request that reported token counts, with the
-    cached tokens it reused underneath. Whether the input count includes the cached part depends on the backend
-    (OpenAI-style usage counts the whole prompt; llama.cpp counts only the newly processed part),
-    so the two are shown as reported and never added up.
+    cached tokens it reused underneath. Whether the input count includes the cached part depends
+    on the backend (OpenAI-style usage counts the whole prompt; llama.cpp counts only the newly
+    processed part), so the two are shown as reported and never added up.
   - **Last output**: output tokens of that same request, plus how much reply data has arrived
     so far while requests are streaming.
   - **Generation p50**: median generation speed, with p95 and p99, and a histogram underneath.
