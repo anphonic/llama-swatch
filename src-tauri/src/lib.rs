@@ -8,6 +8,7 @@ pub mod events;
 pub mod monitor;
 pub mod poller;
 pub mod runtime;
+pub mod skins;
 pub mod sse;
 pub mod state;
 pub mod theme;
