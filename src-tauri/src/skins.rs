@@ -69,23 +69,23 @@ const STANDARD_DARK: Table = [
 ];
 const CONTRAST_LIGHT: Table = [
     ("bg", "#ffffff"), ("panel", "#ffffff"), ("text", "#000000"), ("muted", "#3f3f46"),
-    ("border", "#52525b"), ("track", "#a1a1aa"), ("grey", "#52525b"), ("green", "#047857"),
-    ("amber", "#b45309"), ("amberText", "#92400e"), ("blue", "#1d4ed8"), ("red", "#b91c1c"),
+    ("border", "#52525b"), ("track", "#a1a1aa"), ("grey", "#52525b"), ("green", "#047353"),
+    ("amber", "#a34b08"), ("amberText", "#92400e"), ("blue", "#1d4ed8"), ("red", "#b91c1c"),
 ];
 const CONTRAST_DARK: Table = [
     ("bg", "#000000"), ("panel", "#000000"), ("text", "#ffffff"), ("muted", "#d4d4d8"),
     ("border", "#a1a1aa"), ("track", "#52525b"), ("grey", "#a1a1aa"), ("green", "#4ade80"),
-    ("amber", "#fbbf24"), ("amberText", "#fbbf24"), ("blue", "#4577b4"), ("red", "#fca5a5"),
+    ("amber", "#fbbf24"), ("amberText", "#fbbf24"), ("blue", "#5583ba"), ("red", "#fca5a5"),
 ];
 const MUTED_LIGHT: Table = [
     ("bg", "#eceff4"), ("panel", "#f8f9fb"), ("text", "#2e3440"), ("muted", "#4c566a"),
-    ("border", "#d8dee9"), ("track", "#d8dee9"), ("grey", "#7b869a"), ("green", "#4d7a3c"),
-    ("amber", "#8f6420"), ("amberText", "#8f6420"), ("blue", "#5e81ac"), ("red", "#a8454f"),
+    ("border", "#d8dee9"), ("track", "#d8dee9"), ("grey", "#5a6271"), ("green", "#446c35"),
+    ("amber", "#815a1d"), ("amberText", "#8f6420"), ("blue", "#496486"), ("red", "#a1424c"),
 ];
 const MUTED_DARK: Table = [
     ("bg", "#2e3440"), ("panel", "#3b4252"), ("text", "#eceff4"), ("muted", "#b4bccc"),
-    ("border", "#434c5e"), ("track", "#434c5e"), ("grey", "#98a1b5"), ("green", "#a3be8c"),
-    ("amber", "#ebcb8b"), ("amberText", "#ebcb8b"), ("blue", "#6d9aa6"), ("red", "#e89aa1"),
+    ("border", "#434c5e"), ("track", "#434c5e"), ("grey", "#ccd1da"), ("green", "#c5d6b7"),
+    ("amber", "#ebcb8b"), ("amberText", "#ebcb8b"), ("blue", "#c2d5da"), ("red", "#f2c6ca"),
 ];
 
 fn palette(t: &Table) -> Palette {
@@ -321,15 +321,25 @@ mod tests {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
-    /// Text colours must stay readable on the panel; `blue` is also a fill under hardcoded white text
+    fn pill_background(fg: &str, panel: &str) -> String {
+        let channel =
+            |hex: &str, i: usize| u16::from_str_radix(&hex[1 + i * 2..3 + i * 2], 16).unwrap();
+        let mixed = (0..3).map(|i| (channel(fg, i) * 15 + channel(panel, i) * 85 + 50) / 100);
+        format!("#{}", mixed.map(|v| format!("{v:02x}")).collect::<String>())
+    }
+
+    /// Text colours must stay readable on the panel; `blue` is also a fill under contrasting text
     /// (`button.primary`, pressed pin and segmented tab in styles.css). Standard and Minimal keep
     /// today's colours and are not checked.
     #[test]
     fn built_in_skins_are_legible() {
-        // (skin id, text on panel/bg, muted, status text, white on blue)
-        let rules = [("builtin:high-contrast", 7.0, 4.5, 4.5, 4.5), ("builtin:muted", 7.0, 4.5, 4.5, 3.0)];
+        // (skin id, text on panel/bg, muted, status text)
+        let rules = [
+            ("builtin:high-contrast", 7.0, 4.5, 4.5),
+            ("builtin:muted", 7.0, 4.5, 4.5),
+        ];
         let mut fails = Vec::new();
-        for (id, text_min, muted_min, status_min, white_min) in rules {
+        for (id, text_min, muted_min, status_min) in rules {
             let skin = builtins().into_iter().find(|s| s.id == id).unwrap();
             for (mode, p) in [("light", &skin.light), ("dark", &skin.dark)] {
                 let mut check = |what: &str, fg: &str, bg: &str, min: f64| {
@@ -345,12 +355,20 @@ mod tests {
                 for k in ["green", "amber", "amberText", "red"] {
                     check(k, &p[k], &p["panel"], status_min);
                 }
-                // Muted's blue is both a text colour and a fill under white, and grey only colours the
-                // idle-state pill; 3:1 is the UI/large-text bar for both.
+                // Muted's blue is also used for text, and grey colours the idle-state pill.
                 let soft_min = if id == "builtin:muted" { 3.0 } else { status_min };
                 check("blue", &p["blue"], &p["panel"], soft_min);
                 check("grey", &p["grey"], &p["panel"], soft_min);
-                check("white on blue", "#ffffff", &p["blue"], white_min);
+                for k in ["green", "amber", "blue", "red", "grey"] {
+                    let pill_bg = pill_background(&p[k], &p["panel"]);
+                    check(&format!("pill/{k}"), &p[k], &pill_bg, 4.5);
+                }
+                let button_text = if ratio("#ffffff", &p["blue"]) >= ratio("#000000", &p["blue"]) {
+                    "#ffffff"
+                } else {
+                    "#000000"
+                };
+                check("button label on blue", button_text, &p["blue"], 4.5);
             }
         }
         assert!(fails.is_empty(), "illegible palette pairs:

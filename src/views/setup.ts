@@ -219,6 +219,7 @@ export function renderSetup(
       const next = await listSkins();
       if (!alive()) return;
       list = next;
+      foldersInput.value = next.folder;
       fillSkins(skinSelect.value);
       const picked = skinById(skinSelect.value);
       if (picked) applySkin(picked);
