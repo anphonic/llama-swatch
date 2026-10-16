@@ -11,8 +11,8 @@ use tauri_plugin_window_state::{StateFlags, WindowExt};
 use crate::config::Bounds;
 
 const MIN_INNER_HEIGHT_LOGICAL: f64 = 400.0;
-pub const MINI_WIDTH: f64 = 300.0;
-pub const MINI_HEIGHT: f64 = 36.0;
+const MINI_WIDTH: f64 = 300.0;
+const MINI_HEIGHT: f64 = 36.0;
 const FULL_MIN: LogicalSize<f64> = LogicalSize { width: 420.0, height: MIN_INNER_HEIGHT_LOGICAL };
 const FULL_DEFAULT: LogicalSize<f64> = LogicalSize { width: 481.0, height: 770.0 };
 
@@ -45,6 +45,10 @@ pub fn enter_mini(w: &tauri::WebviewWindow) -> tauri::Result<Option<Bounds>> {
     if !w.is_decorated()? {
         return Ok(None);
     }
+    // Save the normal (restored) rect, not the maximized one.
+    if w.is_maximized()? {
+        w.unmaximize()?;
+    }
     let pos = w.outer_position()?;
     let size = w.inner_size()?;
     let saved = Bounds { x: pos.x, y: pos.y, width: size.width, height: size.height };
@@ -76,8 +80,10 @@ fn place_full(w: &tauri::WebviewWindow, saved: Option<Bounds>) -> tauri::Result<
         .collect();
     match saved.filter(|b| visible_on(b, &monitors)) {
         Some(b) => {
-            w.set_size(PhysicalSize::new(b.width, b.height))?;
+            // Position first: moving to another monitor can change the DPI scale, which
+            // would rescale a size set before the move.
             w.set_position(PhysicalPosition::new(b.x, b.y))?;
+            w.set_size(PhysicalSize::new(b.width, b.height))?;
         }
         None => {
             w.set_size(FULL_DEFAULT)?;
@@ -96,10 +102,12 @@ fn place_full(w: &tauri::WebviewWindow, saved: Option<Bounds>) -> tauri::Result<
 /// depending on when Tauri runs the plugin's window-ready hook, and the restore happens exactly
 /// once. On first launch there is no saved state, so the restore only records the current state.
 ///
-/// `mini` is the selected skin's layout. In Mini the window is made frameless and unclamped
-/// before the restore (so tauri.conf.json's 420x400 minimum can't stretch the strip) and forced
-/// to the strip size after it. Otherwise a saved strip (a Mini session whose skin was changed by
-/// hand) is replaced by `full_bounds`.
+/// `mini` is the selected skin's layout. Both paths restore with the minimum size cleared, so
+/// tauri.conf.json's 420x400 minimum can't stretch a saved strip into a window-sized one. In
+/// Mini the window is also made frameless and forced to the strip size after the restore.
+/// Otherwise a saved strip (a Mini session whose skin was changed by hand) is replaced by
+/// `full_bounds`, the minimum is set, and only then is the maximized state restored (setting a
+/// minimum size on Windows resizes the window and would drop it).
 pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool, mini: bool, full_bounds: Option<Bounds>) {
     let Some(w) = app.get_webview_window(MAIN_LABEL) else { return };
     if mini {
@@ -111,14 +119,16 @@ pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool, mini: b
         // stretch a saved strip to exactly the minimum, which looks like a real window there.
         let _ = w.set_min_size(None::<Size>);
     }
-    let _ = w.restore_state(STATE_FLAGS);
     if mini {
+        let _ = w.restore_state(STATE_FLAGS);
         let _ = w.set_size(LogicalSize::new(MINI_WIDTH, MINI_HEIGHT));
     } else {
+        let _ = w.restore_state(StateFlags::SIZE | StateFlags::POSITION);
         if is_strip(&w) {
             let _ = place_full(&w, full_bounds);
         }
         let _ = w.set_min_size(Some(FULL_MIN));
+        let _ = w.restore_state(StateFlags::MAXIMIZED);
     }
     if always_on_top {
         // Unsupported on some Linux/Wayland compositors; stay quiet.

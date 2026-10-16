@@ -232,7 +232,7 @@ pub fn set_layout(app: AppHandle, state: State<'_, AppState>, mini: bool) -> Res
     let w = app.get_webview_window(crate::window::MAIN_LABEL).ok_or("no main window")?;
     if mini {
         if let Some(b) = crate::window::enter_mini(&w).map_err(|e| e.to_string())? {
-            // Not configured yet: nothing to save, and the strip still works this session.
+            // `None` (already Mini) keeps the bounds saved earlier.
             config::save_full_bounds(&state.config_path, Some(b)).map_err(|e| e.to_string())?;
         }
         Ok(())
