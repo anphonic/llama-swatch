@@ -19,9 +19,9 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
   const win = getCurrentWindow();
   const icon = h("img", { class: "mini-icon", src: "/icon.png", alt: "", "data-tauri-drag-region": "" });
   const name = h("span", { class: "mini-name", "data-tauri-drag-region": "" }, "Connecting…");
-  const dot = h("span", { class: "dot mini-dot" });
+  const dot = h("span", { class: "dot mini-dot", "data-tauri-drag-region": "" });
   const word = h("span", { class: "mini-word", "data-tauri-drag-region": "" });
-  const more = h("span", { class: "mini-more" });
+  const more = h("span", { class: "mini-more", "data-tauri-drag-region": "" });
   const min = h("button", { type: "button", class: "mini-btn", "aria-label": "Minimize" }, "–");
   const close = h("button", { type: "button", class: "mini-btn", "aria-label": "Close" }, "×");
   const menu = h(
@@ -47,6 +47,7 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
   min.addEventListener("click", () => void win.minimize());
   close.addEventListener("click", () => void win.close());
   const openMenu = (e: MouseEvent) => {
+    if ((e.target as HTMLElement).closest(".mini-btn, .mini-menu")) return;
     e.preventDefault();
     menu.hidden = false;
     (menu.firstElementChild as HTMLElement).focus();

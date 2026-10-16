@@ -12,6 +12,8 @@ let dashboard: Dashboard | null = null;
 let updateCheck: Promise<UpdateInfo | null> | null = null;
 /** null until listed, or if listing failed; Settings then offers no picker. */
 let skins: SkinList | null = null;
+/** Bumped by every navigation so a slower, older one can tell it was superseded and stop. */
+let navSeq = 0;
 
 /** The window shape is decided here, not by applySkin, so a Settings preview only recolours. */
 function setLayoutAttr(mini: boolean) {
@@ -19,6 +21,7 @@ function setLayoutAttr(mini: boolean) {
 }
 
 async function showSetup(view: SettingsView) {
+  const seq = ++navSeq;
   dashboard?.destroy();
   dashboard = null;
   setLayoutAttr(false);
@@ -32,27 +35,36 @@ async function showSetup(view: SettingsView) {
   };
   // The backend rescans the skins folder whenever Settings opens.
   skins = await listSkins().catch(() => skins);
+  if (seq !== navSeq) return;
   root.replaceChildren(renderSetup(view, skins, onSaved, cancel));
 }
 
 /** Applies the saved skin, sizes the window for its layout, and shows the matching view. */
-async function showMain(view: SettingsView) {
-  const { skin, note } = skins ? resolveSkin(skins, view.settings.skin) : { skin: null, note: null };
+async function showMain(view: SettingsView, forceFull = false) {
+  const seq = ++navSeq;
+  // forceFull: the saved skin is Mini but switching away failed; show the full view for this session.
+  const id = forceFull ? view.settings.lastFullSkin : view.settings.skin;
+  const { skin, note } = skins ? resolveSkin(skins, id) : { skin: null, note: null };
   if (note) console.warn(note);
   applySkin(skin);
-  const mini = skin?.layout === "mini";
+  const mini = !forceFull && skin?.layout === "mini";
   await setLayout(mini).catch((e) => console.error("set_layout failed:", String(e)));
+  if (seq !== navSeq) return;
   setLayoutAttr(mini);
   if (mini) await showMini(view);
   else await showDashboard(view);
 }
 
 async function openSettings() {
+  const seq = ++navSeq;
   try {
     await setLayout(false);
+    if (seq !== navSeq) return;
     setLayoutAttr(false);
+    const view = await getSettings();
+    if (seq !== navSeq) return;
     // showSetup rescans the skins folder, so Settings starts fresh.
-    await showSetup(await getSettings());
+    await showSetup(view);
   } catch (e) {
     console.error("failed to load settings:", String(e));
   }
@@ -64,13 +76,18 @@ async function showMini(view: SettingsView) {
     openSettings: () => void openSettings(),
     fullDashboard: () => {
       void (async () => {
+        const seq = navSeq;
+        let saved = true;
         try {
           await setSkin(view.settings.lastFullSkin, true);
         } catch (e) {
+          saved = false;
           console.error("failed to restore the full skin:", String(e));
         }
-        // On failure the saved skin is still Mini, so this reopens the strip; Settings is the way out.
-        await showMain(await getSettings());
+        const settings = await getSettings();
+        if (seq !== navSeq) return;
+        // If saving failed the stored skin is still Mini; show full anyway for this session.
+        await showMain(settings, !saved);
       })().catch((e) => console.error("failed to load settings:", String(e)));
     },
   });

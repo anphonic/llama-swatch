@@ -304,7 +304,7 @@ input, .field select {
 .mini-gap { flex: 1; align-self: stretch; }
 .mini-btn { border: 0; background: transparent; width: 28px; height: 28px; padding: 0; flex: none; }
 .mini-btn:hover { background: var(--track); }
-.mini .dot { width: 10px; height: 10px; }
+.mini .dot { width: 10px; height: 10px; box-shadow: none; }
 .mini[data-state="idle"] .dot, .mini[data-state="loaded"] .dot { background: var(--green); }
 .mini[data-state="busy"] .dot { background: var(--blue); }
 .mini[data-state="loading"] .dot, .mini[data-state="unloading"] .dot { background: var(--amber); }
