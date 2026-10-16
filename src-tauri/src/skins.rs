@@ -73,19 +73,19 @@ const CONTRAST_LIGHT: Table = [
     ("amber", "#b45309"), ("amberText", "#92400e"), ("blue", "#1d4ed8"), ("red", "#b91c1c"),
 ];
 const CONTRAST_DARK: Table = [
-    ("bg", "#000000"), ("panel", "#0a0a0a"), ("text", "#ffffff"), ("muted", "#d4d4d8"),
+    ("bg", "#000000"), ("panel", "#000000"), ("text", "#ffffff"), ("muted", "#d4d4d8"),
     ("border", "#a1a1aa"), ("track", "#52525b"), ("grey", "#a1a1aa"), ("green", "#4ade80"),
-    ("amber", "#fbbf24"), ("amberText", "#fbbf24"), ("blue", "#93c5fd"), ("red", "#fca5a5"),
+    ("amber", "#fbbf24"), ("amberText", "#fbbf24"), ("blue", "#4577b4"), ("red", "#fca5a5"),
 ];
 const MUTED_LIGHT: Table = [
     ("bg", "#eceff4"), ("panel", "#f8f9fb"), ("text", "#2e3440"), ("muted", "#4c566a"),
-    ("border", "#d8dee9"), ("track", "#d8dee9"), ("grey", "#9aa5b8"), ("green", "#5b8a4a"),
-    ("amber", "#c08a2e"), ("amberText", "#8f6420"), ("blue", "#5e81ac"), ("red", "#bf616a"),
+    ("border", "#d8dee9"), ("track", "#d8dee9"), ("grey", "#7b869a"), ("green", "#4d7a3c"),
+    ("amber", "#8f6420"), ("amberText", "#8f6420"), ("blue", "#5e81ac"), ("red", "#a8454f"),
 ];
 const MUTED_DARK: Table = [
-    ("bg", "#2e3440"), ("panel", "#3b4252"), ("text", "#eceff4"), ("muted", "#a3acbf"),
-    ("border", "#434c5e"), ("track", "#434c5e"), ("grey", "#6b7487"), ("green", "#a3be8c"),
-    ("amber", "#ebcb8b"), ("amberText", "#ebcb8b"), ("blue", "#88c0d0"), ("red", "#bf616a"),
+    ("bg", "#2e3440"), ("panel", "#3b4252"), ("text", "#eceff4"), ("muted", "#b4bccc"),
+    ("border", "#434c5e"), ("track", "#434c5e"), ("grey", "#98a1b5"), ("green", "#a3be8c"),
+    ("amber", "#ebcb8b"), ("amberText", "#ebcb8b"), ("blue", "#6d9aa6"), ("red", "#e89aa1"),
 ];
 
 fn palette(t: &Table) -> Palette {
@@ -305,5 +305,56 @@ mod tests {
         assert_eq!(v["skins"][0]["layout"], "full");
         assert!(v["skins"][0]["light"]["amberText"].is_string());
         assert!(v.get("folderError").is_some());
+    }
+
+    fn lum(hex: &str) -> f64 {
+        let h = hex.trim_start_matches('#');
+        let c = |i: usize| {
+            let v = f64::from(u8::from_str_radix(&h[i..i + 2], 16).unwrap()) / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * c(0) + 0.7152 * c(2) + 0.0722 * c(4)
+    }
+
+    fn ratio(a: &str, b: &str) -> f64 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Text colours must stay readable on the panel; `blue` is also a fill under hardcoded white text
+    /// (`button.primary`, pressed pin and segmented tab in styles.css). Standard and Minimal keep
+    /// today's colours and are not checked.
+    #[test]
+    fn built_in_skins_are_legible() {
+        // (skin id, text on panel/bg, muted, status text, white on blue)
+        let rules = [("builtin:high-contrast", 7.0, 4.5, 4.5, 4.5), ("builtin:muted", 7.0, 4.5, 4.5, 3.0)];
+        let mut fails = Vec::new();
+        for (id, text_min, muted_min, status_min, white_min) in rules {
+            let skin = builtins().into_iter().find(|s| s.id == id).unwrap();
+            for (mode, p) in [("light", &skin.light), ("dark", &skin.dark)] {
+                let mut check = |what: &str, fg: &str, bg: &str, min: f64| {
+                    let r = ratio(fg, bg);
+                    if r < min {
+                        fails.push(format!("{id} {mode} {what} {fg} on {bg} = {r:.2} (< {min})"));
+                    }
+                };
+                for bg in ["panel", "bg"] {
+                    check(&format!("text/{bg}"), &p["text"], &p[bg], text_min);
+                    check(&format!("muted/{bg}"), &p["muted"], &p[bg], muted_min);
+                }
+                for k in ["green", "amber", "amberText", "red"] {
+                    check(k, &p[k], &p["panel"], status_min);
+                }
+                // Muted's blue is both a text colour and a fill under white, and grey only colours the
+                // idle-state pill; 3:1 is the UI/large-text bar for both.
+                let soft_min = if id == "builtin:muted" { 3.0 } else { status_min };
+                check("blue", &p["blue"], &p["panel"], soft_min);
+                check("grey", &p["grey"], &p["panel"], soft_min);
+                check("white on blue", "#ffffff", &p["blue"], white_min);
+            }
+        }
+        assert!(fails.is_empty(), "illegible palette pairs:
+{}", fails.join("
+"));
     }
 }
