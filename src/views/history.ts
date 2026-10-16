@@ -30,7 +30,8 @@ function formatTime(ms: number | null): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-const num = (n: number) => n.toLocaleString("en-US");
+/** Token counts; llama-swap sends -1 when the upstream reported none, shown as unknown rather than a number. */
+const num = (n: number) => (n < 0 ? "—" : n.toLocaleString("en-US"));
 
 function cell(text: string | Node, numeric: boolean): HTMLElement {
   return h("td", numeric ? { class: "num" } : {}, text);
