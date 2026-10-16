@@ -83,6 +83,8 @@ pub struct Snapshot {
     pub last_request: Option<LastRequest>,
     /// Reply bytes received so far by requests still streaming; `None` when none are.
     pub streamed_bytes: Option<i64>,
+    /// Loaded model ids for the Mini strip, busiest first (see `mini_order`).
+    pub mini_order: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -227,7 +229,7 @@ impl MonitorState {
                 entries.push((r.model.clone(), r.name.clone(), r.description.clone()));
             }
         }
-        let models = entries
+        let models: Vec<ModelCard> = entries
             .into_iter()
             .map(|(id, name, description)| self.card(id, name, description, now, wall_ms, t))
             .collect();
@@ -237,6 +239,7 @@ impl MonitorState {
             last_ok_ms: self.last_ok_ms,
             version: self.version.clone(),
             version_note: self.version.as_deref().and_then(version_note),
+            mini_order: mini_order(&models),
             models,
             stats: self.stats.as_ref().map(|s| StatsSummary {
                 total_requests: s.total_requests,
@@ -320,6 +323,27 @@ impl MonitorState {
             last_request_at_ms,
         }
     }
+}
+
+/// Loaded models for the Mini strip, busiest first: stalled, busy, loading, unloading, then
+/// idle/loaded. Ties: most recent request first, then id. Not-loaded models are left out.
+pub fn mini_order(models: &[ModelCard]) -> Vec<String> {
+    let rank = |s: &ModelState| match s {
+        ModelState::Stalled { .. } => 0,
+        ModelState::Busy { .. } => 1,
+        ModelState::Loading { .. } => 2,
+        ModelState::Unloading => 3,
+        ModelState::Idle { .. } | ModelState::Loaded => 4,
+        ModelState::NotLoaded => 5,
+    };
+    let mut loaded: Vec<&ModelCard> = models.iter().filter(|m| !matches!(m.state, ModelState::NotLoaded)).collect();
+    loaded.sort_by(|a, b| {
+        rank(&a.state)
+            .cmp(&rank(&b.state))
+            .then_with(|| b.last_request_at_ms.unwrap_or(i64::MIN).cmp(&a.last_request_at_ms.unwrap_or(i64::MIN)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    loaded.into_iter().map(|m| m.id.clone()).collect()
 }
 
 #[cfg(test)]
@@ -681,7 +705,7 @@ mod tests {
         let v = serde_json::to_value(m.snapshot(t0, WALL, &Thresholds::default())).unwrap();
         for key in [
             "host", "connection", "lastOkMs", "version", "versionNote", "models", "stats", "statsAvailable", "eventStream",
-            "eventReadFailed", "lastRequest", "streamedBytes",
+            "eventReadFailed", "lastRequest", "streamedBytes", "miniOrder",
         ] {
             assert!(v.get(key).is_some(), "missing {key}: {v}");
         }
@@ -694,5 +718,49 @@ mod tests {
         for key in ["id", "name", "description", "state", "ttlS", "ttlRemainingS", "tokSHistory", "lastRequestAtMs"] {
             assert!(c.get(key).is_some(), "missing card.{key}: {c}");
         }
+    }
+
+    /// A card for the mini-order tests: only the fields ranking looks at matter.
+    fn mini_card(id: &str, state: ModelState, last: Option<i64>) -> ModelCard {
+        ModelCard {
+            id: id.into(),
+            name: String::new(),
+            description: String::new(),
+            state,
+            ttl_s: None,
+            ttl_remaining_s: None,
+            tok_s_history: vec![],
+            last_request_at_ms: last,
+        }
+    }
+
+    #[test]
+    fn mini_order_ranks_busiest_first() {
+        let busy = ModelState::Busy { requests: 1, oldest_elapsed_s: 1, streaming: 1, waiting_first_token: 0, awaiting_reply: 0, last_output_s: Some(0), first_token_long: false, awaiting_long: false };
+        let models = vec![
+            mini_card("idle", ModelState::Idle { uptime_s: 5 }, Some(100)),
+            mini_card("off", ModelState::NotLoaded, Some(999)),
+            mini_card("load", ModelState::Loading { elapsed_s: 1, slow: false }, None),
+            mini_card("busy", busy, Some(1)),
+            mini_card("stuck", ModelState::Stalled { reason: "x".into() }, None),
+            mini_card("bye", ModelState::Unloading, None),
+            mini_card("loaded", ModelState::Loaded, Some(200)),
+        ];
+        assert_eq!(mini_order(&models), ["stuck", "busy", "load", "bye", "loaded", "idle"]);
+    }
+
+    #[test]
+    fn mini_order_ties_go_to_most_recent_then_id() {
+        let models = vec![
+            mini_card("b", ModelState::Idle { uptime_s: 1 }, None),
+            mini_card("a", ModelState::Idle { uptime_s: 1 }, None),
+            mini_card("c", ModelState::Idle { uptime_s: 1 }, Some(5)),
+        ];
+        assert_eq!(mini_order(&models), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn mini_order_is_empty_when_nothing_is_loaded() {
+        assert!(mini_order(&[mini_card("x", ModelState::NotLoaded, Some(1))]).is_empty());
     }
 }

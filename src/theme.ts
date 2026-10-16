@@ -9,7 +9,7 @@ let chosen: Theme = "system";
 let desktop: ColorScheme = "unknown";
 let skin: Skin | null = null;
 
-const STANDARD_ID = "builtin:standard";
+export const STANDARD_ID = "builtin:standard";
 const media = window.matchMedia("(prefers-color-scheme: dark)");
 media.addEventListener("change", () => render());
 
@@ -55,7 +55,6 @@ function render() {
   const root = document.documentElement;
   if (effective === "unknown") delete root.dataset.theme;
   else root.dataset.theme = effective;
-  root.dataset.layout = skin?.layout ?? "full";
   paint(effective);
   // Title bar / window decorations; null hands it back to the OS.
   getCurrentWindow()

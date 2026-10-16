@@ -1,9 +1,10 @@
 import "./styles.css";
-import { checkForUpdate, getSettings, getSnapshot, listSkins, onSnapshot } from "./api";
+import { checkForUpdate, getSettings, getSnapshot, listSkins, onSnapshot, setLayout, setSkin } from "./api";
 import type { SettingsView, SkinList, UpdateInfo } from "./types";
 import { createDashboard, type Dashboard } from "./views/dashboard";
+import { createMini } from "./views/mini";
 import { renderSetup } from "./views/setup";
-import { applySkin, applyTheme, initTheme, resolveSkin } from "./theme";
+import { applySkin, applyTheme, initTheme, resolveSkin, STANDARD_ID } from "./theme";
 
 const root = document.getElementById("app")!;
 let dashboard: Dashboard | null = null;
@@ -11,33 +12,106 @@ let dashboard: Dashboard | null = null;
 let updateCheck: Promise<UpdateInfo | null> | null = null;
 /** null until listed, or if listing failed; Settings then offers no picker. */
 let skins: SkinList | null = null;
+/** Bumped by every navigation so a slower, older one can tell it was superseded and stop. */
+let navSeq = 0;
+
+/** The window shape is decided here, not by applySkin, so a Settings preview only recolours. */
+function setLayoutAttr(mini: boolean) {
+  document.documentElement.dataset.layout = mini ? "mini" : "full";
+}
 
 async function showSetup(view: SettingsView) {
+  const seq = ++navSeq;
   dashboard?.destroy();
   dashboard = null;
-  const cancel = view.configured ? () => void showDashboard(view) : undefined;
+  setLayoutAttr(false);
+  const cancel = view.configured ? () => void showMain(view) : undefined;
   const onSaved = async (saved: SettingsView) => {
     applyTheme(saved.settings.theme);
     // Settings may have rescanned the folder, so the saved skin can be newer than `skins`.
     skins = await listSkins().catch(() => skins);
     if (skins) applySkin(resolveSkin(skins, saved.settings.skin).skin);
-    void showDashboard(saved);
+    void showMain(saved);
   };
   // The backend rescans the skins folder whenever Settings opens.
   skins = await listSkins().catch(() => skins);
+  if (seq !== navSeq) return;
   if (skins) applySkin(resolveSkin(skins, view.settings.skin).skin);
   root.replaceChildren(renderSetup(view, skins, onSaved, cancel));
 }
 
+/** Applies the saved skin, sizes the window for its layout, and shows the matching view. */
+async function showMain(view: SettingsView, forceFull = false) {
+  const seq = ++navSeq;
+  // forceFull: the saved skin is Mini but switching away failed; show the full view for this session.
+  const id = forceFull ? view.settings.lastFullSkin : view.settings.skin;
+  let { skin, note } = skins ? resolveSkin(skins, id) : { skin: null, note: null };
+  // A skin file can keep its id but turn into a Mini one; "full" must still be a full layout.
+  if (forceFull && skins && skin?.layout !== "full") ({ skin, note } = resolveSkin(skins, STANDARD_ID));
+  if (note) console.warn(note);
+  applySkin(skin);
+  const mini = !forceFull && skin?.layout === "mini";
+  await setLayout(mini).catch((e) => console.error("set_layout failed:", String(e)));
+  if (seq !== navSeq) return;
+  setLayoutAttr(mini);
+  if (mini) await showMini(view);
+  else await showDashboard(view);
+}
+
+async function openSettings() {
+  const seq = ++navSeq;
+  try {
+    await setLayout(false);
+    if (seq !== navSeq) return;
+    setLayoutAttr(false);
+    const view = await getSettings();
+    if (seq !== navSeq) return;
+    // showSetup rescans the skins folder, so Settings starts fresh.
+    await showSetup(view);
+  } catch (e) {
+    console.error("failed to load settings:", String(e));
+  }
+}
+
+async function showMini(view: SettingsView) {
+  dashboard?.destroy();
+  const current = createMini(view.settings, {
+    openSettings: () => void openSettings(),
+    fullDashboard: () => {
+      void (async () => {
+        const seq = navSeq;
+        let saved = true;
+        try {
+          // The remembered skin may have been edited into a Mini one (or removed) since.
+          skins = await listSkins().catch(() => skins);
+          let id = view.settings.lastFullSkin;
+          if (skins && resolveSkin(skins, id).skin.layout !== "full") id = STANDARD_ID;
+          else if (skins) id = resolveSkin(skins, id).skin.id;
+          await setSkin(id, true);
+        } catch (e) {
+          saved = false;
+          console.error("failed to restore the full skin:", String(e));
+        }
+        const settings = await getSettings();
+        if (seq !== navSeq) return;
+        // If saving failed the stored skin is still Mini; show full anyway for this session.
+        await showMain(settings, !saved);
+      })().catch((e) => console.error("failed to load settings:", String(e)));
+    },
+  });
+  dashboard = current;
+  root.replaceChildren(current.element);
+  try {
+    const snap = await getSnapshot();
+    if (snap && dashboard === current) current.update(snap);
+  } catch (e) {
+    console.error("failed to fetch snapshot:", String(e));
+  }
+}
+
 async function showDashboard(view: SettingsView) {
   dashboard?.destroy();
-  const current = createDashboard(view.settings, async () => {
-    try {
-      await showSetup(await getSettings());
-    } catch (e) {
-      console.error("failed to load settings:", String(e));
-    }
-  });
+  const current = createDashboard(view.settings, openSettings);
   dashboard = current;
   root.replaceChildren(current.element);
   // null = upgraded from a version without the setting: check, and the dashboard says so once.
@@ -68,7 +142,7 @@ async function boot() {
     return null;
   });
   if (skins) applySkin(resolveSkin(skins, view.settings.skin).skin);
-  if (view.configured) await showDashboard(view);
+  if (view.configured) await showMain(view);
   else await showSetup(view);
 }
 

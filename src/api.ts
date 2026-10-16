@@ -13,6 +13,9 @@ export const listSkins = () => invoke<SkinList>("list_skins");
 /** Saves only the skin choice; `full` = it uses the full layout. */
 export const setSkin = (skin: string, full: boolean) => invoke<void>("set_skin", { skin, full });
 
+/** Resizes and undecorates the window for the Mini strip, or restores the full window. */
+export const setLayout = (mini: boolean) => invoke<void>("set_layout", { mini });
+
 export const testConnection = (baseUrl: string, apiKey: string | null) =>
   invoke<TestResult>("test_connection", { baseUrl, apiKey });
 
