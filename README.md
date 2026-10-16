@@ -73,19 +73,20 @@ a request that was already running may show as Idle until it sends output or fin
 
 - **Compact** shows each model on one line (ring, name, state and the status text), so more fit
   without scrolling. **Loaded only** hides models that aren't loaded. Both are remembered.
-- When nothing is loaded, a **Reload** button offers the model that was used most recently, so
-  you can bring it back with one click.
+- When nothing is loaded or loading, a **Reload** button offers the model that llama-swap's
+  request history shows was used most recently, so you can bring it back with one click.
 - Below the models, four tiles summarise traffic:
   - **Requests**: requests since llama-swap started.
-  - **Last input**: prompt tokens of the newest finished request, with the cached tokens it
-    reused underneath. Whether the input count includes the cached part depends on the backend
+  - **Last input**: prompt tokens of the newest request that reported token counts, with the
+    cached tokens it reused underneath. Whether the input count includes the cached part depends on the backend
     (OpenAI-style usage counts the whole prompt; llama.cpp counts only the newly processed part),
     so the two are shown as reported and never added up.
-  - **Last output**: output tokens of the newest finished request, plus how much reply data has
-    arrived so far while requests are streaming.
+  - **Last output**: output tokens of that same request, plus how much reply data has arrived
+    so far while requests are streaming.
   - **Generation p50**: median generation speed, with p95 and p99, and a histogram underneath.
 
-  Hover a tile, or tab to it, for the model behind the last request and the running totals.
+  Hover Last input or Last output, or tab to it, for the model behind that request and the
+  totals since llama-swap started.
 - In History, a token count llama-swap couldn't get from the backend shows as `—`.
 
 ## Window
@@ -96,7 +97,8 @@ a request that was already running may show as Idle until it sends output or fin
   is no longer connected, the saved size is kept and the window opens at the default position
   on the main screen instead. After startup the app only resizes or moves the window when you
   switch to or from the Mini layout (see **Skin** below); leaving Mini puts back the full
-  window's size, position and maximized state.
+  window's size, position and maximized state (or the default size and place if that spot is on
+  a monitor that is no longer connected).
 - Cards are one per row at a fixed height, and the header, toolbar, tiles and History columns
   keep their size as data changes, so nothing jumps around. Status banners and error toasts
   overlay the bottom of the window rather than pushing content down.
