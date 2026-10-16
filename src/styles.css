@@ -227,6 +227,9 @@ input, .field select {
 .check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .check input { width: auto; }
 .thresholds { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.folder-row { display: flex; gap: 6px; }
+.folder-row input { flex: 1; min-width: 0; }
+.skins-skipped { margin: 4px 0 0; padding-left: 18px; color: var(--amber-text); font-size: 12px; }
 .actions { display: flex; gap: 8px; justify-content: flex-end; }
 .form-status { min-height: 1.4em; margin: 0; }
 .form-status[data-kind="ok"] { color: var(--green); }

@@ -1,11 +1,14 @@
-import { isSavedUrl, saveSettings, testConnection } from "../api";
+import { isSavedUrl, listSkins, saveSettings, testConnection } from "../api";
 import { h } from "../dom";
-import type { Settings, SettingsView, TestResult, Theme } from "../types";
+import type { Settings, SettingsView, SkinList, TestResult, Theme } from "../types";
+import { applySkin, resolveSkin } from "../theme";
 import { launchCheckAnswer } from "./dashboard";
 
 export function renderSetup(
   view: SettingsView,
-  onSaved: (saved: SettingsView) => void,
+  /** null: listing failed, so there is nothing to pick from. */
+  skins: SkinList | null,
+  onSaved: (saved: SettingsView) => void | Promise<void>,
   onCancel?: () => void,
 ): HTMLElement {
   const s = view.settings;
@@ -31,6 +34,54 @@ export function renderSetup(
     ...THEMES.map(([value, label]) => h("option", { value }, label)),
   );
   theme.value = s.theme;
+  const miniCycle = h("input", { id: "mini-cycle", type: "checkbox" });
+  miniCycle.checked = s.miniCycle;
+  const skinSelect = h("select", { id: "skin" });
+  const skinInfo = h("div", { class: "hint" });
+  const foldersInput = h("input", { id: "skins-folder", type: "text", readonly: "", value: skins?.folder ?? "" });
+  const copyBtn = h("button", { type: "button" }, "Copy");
+  const rescanBtn = h("button", { type: "button" }, "Rescan");
+  let list = skins;
+  const skinById = (id: string) => list?.skins.find((k) => k.id === id);
+
+  /** Rebuilds the options from `list`, keeping `selected` when it is still there. */
+  const fillSkins = (selected: string) => {
+    skinSelect.replaceChildren();
+    if (!list) {
+      skinSelect.append(h("option", { value: s.skin }, "Standard"));
+      skinSelect.disabled = true;
+      return;
+    }
+    let sawBuiltin = false;
+    let divided = false;
+    for (const k of list.skins) {
+      const builtin = k.id.startsWith("builtin:");
+      if (builtin) sawBuiltin = true;
+      else if (sawBuiltin && !divided) {
+        divided = true;
+        skinSelect.append(h("option", { disabled: "" }, "──────────"));
+      }
+      skinSelect.append(h("option", { value: k.id }, k.layout === "mini" ? `${k.name} (mini)` : k.name));
+    }
+    skinSelect.value = skinById(selected) ? selected : STANDARD_ID;
+  };
+
+  /** Skipped files, the folder error and the "not found" note, from the current scan. */
+  const fillInfo = (note: string | null) => {
+    const lines = list
+      ? [
+          list.folderError,
+          note,
+          ...(list.skipped.length
+            ? [h("ul", { class: "skins-skipped" }, ...list.skipped.map((k) => h("li", {}, `${k.file}: ${k.reason}`)))]
+            : []),
+        ]
+      : ["Skins couldn't be listed"];
+    skinInfo.replaceChildren(...lines.filter((l): l is string | HTMLUListElement => !!l).map((l) => (typeof l === "string" ? h("div", {}, l) : l)));
+  };
+  fillSkins(s.skin);
+  fillInfo(list ? resolveSkin(list, s.skin).note : null);
+
   const status = h("p", { class: "form-status", role: "status" });
   const testBtn = h("button", { type: "button" }, "Test connection");
   const saveBtn = h("button", { type: "submit", class: "primary" }, "Save");
@@ -45,6 +96,10 @@ export function renderSetup(
     field("poll", "Refresh every (seconds)", poll),
     h("label", { class: "check" }, checkUpdates, "Check GitHub for a new release at startup"),
     field("theme", "Theme", theme),
+    field("skin", "Skin", skinSelect),
+    skinInfo,
+    field("skins-folder", "Skins folder", h("div", { class: "folder-row" }, foldersInput, copyBtn, rescanBtn), "Put skin .json files here, then Rescan."),
+    h("label", { class: "check" }, miniCycle, "Cycle through loaded models in Mini"),
     h(
       "details",
       {},
@@ -80,10 +135,16 @@ export function renderSetup(
     alwaysOnTop: s.alwaysOnTop, // changed from the dashboard's pin button, not this form
     checkForUpdates: checkUpdates.checked,
     theme: theme.value as Theme,
+    // Without a skin list the saved choice is passed through, never replaced by a default.
+    skin: list ? skinSelect.value : s.skin,
+    lastFullSkin: skinById(skinSelect.value)?.layout === "full" ? skinSelect.value : s.lastFullSkin,
+    miniCycle: miniCycle.checked,
+    fullBounds: s.fullBounds, // written by the backend when entering Mini
   });
 
   const controls: Array<HTMLInputElement | HTMLSelectElement | HTMLButtonElement> = [
     url, key, removeKey, poll, checkUpdates, theme, load, stop, firstByte, stall, testBtn, saveBtn,
+    skinSelect, miniCycle, copyBtn, rescanBtn,
   ];
   if (cancelBtn) controls.push(cancelBtn);
   const setBusy = (busy: boolean) => {
@@ -141,7 +202,38 @@ export function renderSetup(
       if (alive()) setBusy(false);
     }
   });
-  cancelBtn?.addEventListener("click", () => onCancel?.());
+  skinSelect.addEventListener("change", () => {
+    const picked = skinById(skinSelect.value);
+    if (picked) applySkin(picked);
+  });
+  copyBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(foldersInput.value);
+    } catch {
+      foldersInput.select();
+    }
+  });
+  rescanBtn.addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const next = await listSkins();
+      if (!alive()) return;
+      list = next;
+      fillSkins(skinSelect.value);
+      const picked = skinById(skinSelect.value);
+      if (picked) applySkin(picked);
+      fillInfo(null);
+    } catch (err) {
+      if (alive()) showStatus(String(err), "error");
+    } finally {
+      if (alive()) setBusy(false);
+    }
+  });
+  cancelBtn?.addEventListener("click", () => {
+    // A preview must not outlive the form.
+    if (list) applySkin(resolveSkin(list, s.skin).skin);
+    onCancel?.();
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const entered = capture();
@@ -149,7 +241,7 @@ export function renderSetup(
     try {
       if ((await runTest(entered)) !== true) return;
       const saved = await saveSettings(entered.settings, entered.apiKey);
-      if (alive()) onSaved(saved);
+      if (alive()) await onSaved(saved);
     } catch (err) {
       if (alive()) showStatus(String(err), "error");
     } finally {
@@ -165,6 +257,8 @@ export function renderSetup(
     form,
   );
 }
+
+const STANDARD_ID = "builtin:standard";
 
 const THEMES: ReadonlyArray<[Theme, string]> = [
   ["system", "Match system"],

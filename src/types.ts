@@ -116,6 +116,34 @@ export interface Settings {
   /** null: never answered (settings from an older version); checks, and the dashboard asks once. */
   checkForUpdates: boolean | null;
   theme: Theme;
+  skin: string;
+  lastFullSkin: string;
+  miniCycle: boolean;
+  /** Written by the backend when entering Mini; the form passes it through unchanged. */
+  fullBounds: Bounds | null;
+}
+
+export type Layout = "full" | "mini";
+/** Palette keys mirror skins.rs `KEYS`; values are validated `#rgb`/`#rrggbb`. */
+export type Palette = Record<string, string>;
+export interface Skin {
+  id: string;
+  name: string;
+  layout: Layout;
+  light: Palette;
+  dark: Palette;
+}
+export interface SkinList {
+  skins: Skin[];
+  skipped: { file: string; reason: string }[];
+  folder: string;
+  folderError: string | null;
+}
+export interface Bounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** A newer release on GitHub (update.rs `UpdateInfo`). */
