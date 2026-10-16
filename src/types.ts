@@ -83,6 +83,8 @@ export interface Snapshot {
   lastRequest: LastRequest | null;
   /** Reply bytes received so far by requests still streaming; null when none are. */
   streamedBytes: number | null;
+  /** Loaded model ids for the Mini strip, busiest first. Not-loaded models are left out. */
+  miniOrder: string[];
 }
 
 /**
