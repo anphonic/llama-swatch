@@ -60,6 +60,9 @@ pub struct Bounds {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    /// Whether the window was maximized when Mini was entered. Absent in older files.
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 /// Wrong-typed value (hand edit, newer version) reads as the default instead of making the
@@ -511,6 +514,18 @@ mod tests {
     }
 
     #[test]
+    fn bounds_without_maximized_still_load() {
+        let p = tmp("old-bounds");
+        std::fs::write(
+            &p,
+            r#"{"baseUrl":"http://llama.example.test:8080","fullBounds":{"x":1,"y":2,"width":3,"height":4}}"#,
+        )
+        .unwrap();
+        let s = load_settings(&p).unwrap();
+        assert_eq!(s.full_bounds, Some(Bounds { x: 1, y: 2, width: 3, height: 4, maximized: false }));
+    }
+
+    #[test]
     fn bad_skin_values_do_not_break_the_file() {
         let p = tmp("bad-skin");
         std::fs::write(
@@ -542,7 +557,7 @@ mod tests {
         let p = tmp("unconfigured-skin");
         let _ = std::fs::remove_file(&p);
         assert!(!save_skin(&p, "builtin:minimal", false).unwrap());
-        assert!(!save_full_bounds(&p, Some(Bounds { x: 1, y: 2, width: 3, height: 4 })).unwrap());
+        assert!(!save_full_bounds(&p, Some(Bounds { x: 1, y: 2, width: 3, height: 4, maximized: false })).unwrap());
         assert!(!p.exists());
     }
 }

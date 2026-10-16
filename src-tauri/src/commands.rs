@@ -485,7 +485,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let store = MemoryStore::default();
-        let b = crate::config::Bounds { x: 1, y: 2, width: 3, height: 4 };
+        let b = crate::config::Bounds { x: 1, y: 2, width: 3, height: 4, maximized: false };
         config::save_settings(&path, &Settings { full_bounds: Some(b), ..settings("http://box:8080") }).unwrap();
         let (saved, _) = apply_settings(&path, &store, settings("http://box:8080"), None).unwrap();
         assert_eq!(saved.full_bounds, Some(b));

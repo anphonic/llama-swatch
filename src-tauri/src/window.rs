@@ -45,13 +45,14 @@ pub fn enter_mini(w: &tauri::WebviewWindow) -> tauri::Result<Option<Bounds>> {
     if !w.is_decorated()? {
         return Ok(None);
     }
-    // Save the normal (restored) rect, not the maximized one.
-    if w.is_maximized()? {
+    // Save the normal (restored) rect, not the maximized one, and remember it was maximized.
+    let was_max = w.is_maximized()?;
+    if was_max {
         w.unmaximize()?;
     }
     let pos = w.outer_position()?;
     let size = w.inner_size()?;
-    let saved = Bounds { x: pos.x, y: pos.y, width: size.width, height: size.height };
+    let saved = Bounds { x: pos.x, y: pos.y, width: size.width, height: size.height, maximized: was_max };
     w.set_min_size(None::<Size>)?;
     w.set_decorations(false)?;
     w.set_resizable(false)?;
@@ -84,6 +85,9 @@ fn place_full(w: &tauri::WebviewWindow, saved: Option<Bounds>) -> tauri::Result<
             // would rescale a size set before the move.
             w.set_position(PhysicalPosition::new(b.x, b.y))?;
             w.set_size(PhysicalSize::new(b.width, b.height))?;
+            if b.maximized {
+                let _ = w.maximize();
+            }
         }
         None => {
             w.set_size(FULL_DEFAULT)?;
@@ -143,7 +147,9 @@ pub fn prepare(app: &AppHandle, always_on_top: bool, first_launch: bool, mini: b
 /// Whether a restored inner height (physical px) is below the full layout's minimum: a saved
 /// Mini strip. A window sitting exactly at the minimum is a real full window.
 fn is_strip_height(inner_h: u32, scale: f64) -> bool {
-    f64::from(inner_h) < MIN_INNER_HEIGHT_LOGICAL * scale
+    // Compare against the rounded physical minimum: at 4/3 the 400 logical minimum is 533 px,
+    // and a real minimum-height window must not read as a strip.
+    f64::from(inner_h) < (MIN_INNER_HEIGHT_LOGICAL * scale).round()
 }
 
 /// The restored window is a leftover Mini strip (see `prepare`, which restores unclamped).
@@ -189,12 +195,18 @@ mod tests {
         assert!(!is_strip_height(400, 1.0), "exactly the minimum");
         assert!(!is_strip_height(600, 1.5), "exactly the minimum at 150%");
         assert!(!is_strip_height(1100, 1.25), "normal window");
+        assert!(!is_strip_height(533, 4.0 / 3.0), "minimum at 4/3");
+        assert!(!is_strip_height(534, 4.0 / 3.0), "just above the minimum at 4/3");
+        assert!(!is_strip_height(500, 1.25), "minimum at 125%");
+        assert!(!is_strip_height(600, 1.5), "minimum at 150%");
+        assert!(is_strip_height(48, 4.0 / 3.0), "strip at 4/3");
+        assert!(is_strip_height(399, 1.0), "one pixel short of the minimum at 100%");
     }
 
     #[test]
     fn bounds_must_touch_a_monitor() {
         let monitors = [(0, 0, 1920, 1080), (1920, 0, 2560, 1440)];
-        let b = |x, y| Bounds { x, y, width: 500, height: 700 };
+        let b = |x, y| Bounds { x, y, width: 500, height: 700, maximized: false };
         assert!(visible_on(&b(100, 100), &monitors));
         assert!(visible_on(&b(2000, 50), &monitors), "second monitor");
         assert!(!visible_on(&b(5000, 100), &monitors), "unplugged monitor to the right");
