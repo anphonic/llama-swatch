@@ -120,9 +120,9 @@ a request that was already running may show as Idle until it sends output or fin
   path), then press Rescan. Skins follow the Theme setting, so each has a light and a dark half.
   With the Minimal skin (or any skin with `"layout": "mini"`) the window becomes a one-line strip;
   double-click or right-click it for Full dashboard or Settings (hover over the strip for a
-  reminder). From the keyboard, tab to the strip and press the Menu key or Shift+F10; Escape closes the menu. Full dashboard returns to the
-  full skin you last used. The "Cycle through loaded models in
-  Mini" option rotates through every loaded model every 4 s.
+  reminder). From the keyboard, tab to the strip and press the Menu key or Shift+F10; Escape
+  closes the menu. Full dashboard returns to the full skin you last used. The "Cycle through
+  loaded models in Mini" option rotates through every loaded model every 4 s.
 
   <img src="docs/images/screenshot-mini.png" alt="Mini strip with the Minimal skin: the busiest model, its Streaming status and a +2 count of the other loaded models, with minimise and close buttons" width="300">
 

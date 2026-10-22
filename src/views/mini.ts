@@ -27,11 +27,12 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
   const more = h("span", { class: "mini-more", "data-tauri-drag-region": "" });
   const pin = h("button", { type: "button", class: "mini-btn mini-pin" });
   pin.append(pinIcon());
-  const min = h("button", { type: "button", class: "mini-btn", "aria-label": "Minimize" }, "–");
-  const close = h("button", { type: "button", class: "mini-btn", "aria-label": "Close" }, "×");
+  // Own titles, so the buttons and menu don't inherit the strip's hint.
+  const min = h("button", { type: "button", class: "mini-btn", "aria-label": "Minimize", title: "Minimize" }, "–");
+  const close = h("button", { type: "button", class: "mini-btn", "aria-label": "Close", title: "Close" }, "×");
   const menu = h(
     "div",
-    { class: "mini-menu", role: "menu", hidden: "" },
+    { class: "mini-menu", role: "menu", hidden: "", title: "" },
     h("button", { type: "button", role: "menuitem", "data-act": "full" }, "Full dashboard"),
     h("button", { type: "button", role: "menuitem", "data-act": "settings" }, "Settings…"),
   );
