@@ -305,6 +305,9 @@ input, .field select {
 .mini-gap { flex: 1; align-self: stretch; }
 .mini-btn { border: 0; background: transparent; width: 28px; height: 28px; padding: 0; flex: none; }
 .mini-btn:hover { background: var(--track); }
+.mini-pin { display: inline-flex; align-items: center; justify-content: center; }
+.mini-pin svg { width: 14px; height: 14px; }
+.mini-pin[aria-pressed="true"] { background: var(--blue); color: var(--blue-text, #fff); }
 .mini .dot { width: 10px; height: 10px; box-shadow: none; }
 .mini[data-state="idle"] .dot, .mini[data-state="loaded"] .dot { background: var(--green); }
 .mini[data-state="busy"] .dot { background: var(--blue); }

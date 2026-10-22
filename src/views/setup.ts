@@ -132,7 +132,7 @@ export function renderSetup(
       firstByteTimeoutS: readSeconds(firstByte, 90),
       streamStallTimeoutS: readSeconds(stall, 30),
     },
-    alwaysOnTop: s.alwaysOnTop, // changed from the dashboard's pin button, not this form
+    alwaysOnTop: s.alwaysOnTop, // changed from the pin buttons (dashboard and Mini), not this form
     checkForUpdates: checkUpdates.checked,
     theme: theme.value as Theme,
     // Without a skin list the saved choice is passed through, never replaced by a default.
