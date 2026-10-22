@@ -11,7 +11,7 @@ use tauri_plugin_window_state::{StateFlags, WindowExt};
 use crate::config::Bounds;
 
 const MIN_INNER_HEIGHT_LOGICAL: f64 = 400.0;
-const MINI_WIDTH: f64 = 300.0;
+const MINI_WIDTH: f64 = 340.0;
 const MINI_HEIGHT: f64 = 36.0;
 const FULL_MIN: LogicalSize<f64> = LogicalSize { width: 420.0, height: MIN_INNER_HEIGHT_LOGICAL };
 const FULL_DEFAULT: LogicalSize<f64> = LogicalSize { width: 481.0, height: 770.0 };

@@ -1,9 +1,12 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { setAlwaysOnTopSetting } from "../api";
 import { h } from "../dom";
 import type { ModelCard, Settings, Snapshot } from "../types";
-import { bannerText, CONN_TEXT, PILL, type Dashboard } from "./dashboard";
+import { bannerText, CONN_TEXT, PILL, pinIcon, type Dashboard } from "./dashboard";
 
 const CYCLE_MS = 4000;
+/** The strip has no visible menu, so its tooltip says how to reach one. */
+const HINT = "Drag to move. Double-click or right-click for Full dashboard and Settings.";
 
 export interface MiniActions {
   openSettings(): void;
@@ -22,6 +25,8 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
   const dot = h("span", { class: "dot mini-dot", "data-tauri-drag-region": "" });
   const word = h("span", { class: "mini-word", "data-tauri-drag-region": "" });
   const more = h("span", { class: "mini-more", "data-tauri-drag-region": "" });
+  const pin = h("button", { type: "button", class: "mini-btn mini-pin" });
+  pin.append(pinIcon());
   const min = h("button", { type: "button", class: "mini-btn", "aria-label": "Minimize" }, "–");
   const close = h("button", { type: "button", class: "mini-btn", "aria-label": "Close" }, "×");
   const menu = h(
@@ -39,11 +44,29 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
     word,
     more,
     h("span", { class: "mini-gap", "data-tauri-drag-region": "" }),
+    pin,
     min,
     close,
     menu,
   );
 
+  // Shares the alwaysOnTop setting with the full dashboard's pin button.
+  let onTop = settings.alwaysOnTop;
+  function renderPin() {
+    pin.setAttribute("aria-pressed", String(onTop));
+    const label = onTop ? "Stop keeping on top" : "Keep on top";
+    pin.title = label;
+    pin.setAttribute("aria-label", label);
+  }
+  renderPin();
+  pin.addEventListener("click", () => {
+    onTop = !onTop;
+    renderPin();
+    // Some platforms (e.g. certain Wayland compositors) ignore or reject this; stay quiet.
+    win.setAlwaysOnTop(onTop).catch((e) => console.warn("setAlwaysOnTop:", String(e)));
+    setAlwaysOnTopSetting(onTop).catch((e) => console.warn("could not save pin state:", String(e)));
+  });
+  strip.title = HINT;
   min.addEventListener("click", () => void win.minimize());
   close.addEventListener("click", () => void win.close());
   /** What had focus when the menu opened, so Escape can give it back. */
@@ -103,8 +126,9 @@ export function createMini(settings: Settings, actions: MiniActions): Dashboard 
     if (!s) return;
     strip.dataset.conn = s.connection.kind;
     const tip = bannerText(s.connection, s.lastOkMs);
-    if (tip !== null) strip.title = tip;
-    else strip.removeAttribute("title");
+    strip.title = tip === null ? HINT : `${tip}
+
+${HINT}`;
     if (s.connection.kind !== "connected" && s.connection.kind !== "connecting") {
       name.textContent = CONN_TEXT[s.connection.kind];
       word.textContent = "";
