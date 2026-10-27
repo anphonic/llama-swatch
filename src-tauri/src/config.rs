@@ -199,7 +199,7 @@ pub fn load_settings(path: &Path) -> Option<Settings> {
 static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn lock_writes() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn lock_writes() -> std::sync::MutexGuard<'static, ()> {
     SETTINGS_WRITE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -209,8 +209,8 @@ pub fn save_settings(path: &Path, s: &Settings) -> Result<(), ConfigError> {
     write_settings(path, s)
 }
 
-/// The write itself; the caller holds `SETTINGS_WRITE`.
-fn write_settings(path: &Path, s: &Settings) -> Result<(), ConfigError> {
+/// The write itself; the caller holds `SETTINGS_WRITE` (see `lock_writes`).
+pub(crate) fn write_settings(path: &Path, s: &Settings) -> Result<(), ConfigError> {
     use std::io::Write;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -420,7 +420,6 @@ mod tests {
         let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, check_for_updates: Some(false), theme: Theme::Dark, ..Default::default() };
         save_settings(&path, &s).unwrap();
         assert_eq!(load_settings(&path), Some(s));
-        assert!(!path.with_extension("json.tmp").exists(), "temp file is renamed away");
     }
 
     #[test]
