@@ -218,6 +218,9 @@ pub async fn list_skins(state: State<'_, AppState>) -> Result<crate::skins::Skin
 /// Saves only the skin choice (the Mini menu's "Full dashboard" works while llama-swap is down).
 #[tauri::command]
 pub fn set_skin(state: State<'_, AppState>, skin: String, full: bool) -> Result<(), String> {
+    if !crate::skins::is_valid_skin_id(&skin) {
+        return Err("unknown skin".into());
+    }
     match config::save_skin(&state.config_path, &skin, full) {
         Ok(true) => Ok(()),
         Ok(false) => Err("the settings file could not be read".into()),
@@ -581,8 +584,9 @@ mod tests {
         let path = dir.path().join("settings.json");
         let store = MemoryStore::default();
         apply_settings(&path, &store, settings("http://old:8080"), Some("k1".into())).unwrap();
-        // Make the atomic rename fail by putting a directory where the tmp file goes.
-        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        // Make the atomic rename fail by putting a directory where the settings file goes.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
         assert!(apply_settings(&path, &store, settings("http://new:8080"), Some("k2".into())).is_err());
         assert_eq!(store.get("http://old:8080").unwrap().as_deref(), Some("k1"));
     }
