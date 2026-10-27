@@ -88,6 +88,9 @@ struct Tracked {
     last_bytes_change: Instant,
 }
 
+/// Most in-flight requests tracked at once; the server controls the event stream, so the table must not grow without bound.
+pub const MAX_INFLIGHT: usize = 1024;
+
 /// In-flight requests keyed by llama-swap request ID. Times are local
 /// `Instant`s, so server/client clock skew never matters.
 #[derive(Debug, Default)]
@@ -119,6 +122,9 @@ impl InflightTable {
     }
 
     fn upsert(&mut self, e: InflightEntry, prev: Option<Tracked>, now: Instant) {
+        if prev.is_none() && self.entries.len() >= MAX_INFLIGHT {
+            return;
+        }
         let tracked = match prev {
             Some(p) => Tracked {
                 last_bytes_change: if e.resp_bytes != p.entry.resp_bytes { now } else { p.last_bytes_change },
@@ -151,7 +157,7 @@ impl InflightTable {
     pub fn streamed_bytes(&self) -> Option<i64> {
         let mut started = self.entries.values().filter(|t| t.entry.response_started).peekable();
         started.peek()?;
-        Some(started.map(|t| t.entry.resp_bytes).sum())
+        Some(started.fold(0i64, |acc, t| acc.saturating_add(t.entry.resp_bytes)))
     }
 
     pub fn clear(&mut self) {
@@ -656,6 +662,41 @@ mod tests {
         assert_eq!(t.streamed_bytes(), Some(1234), "summed across models");
         t.apply(InflightMsg { operation: "remove".into(), id: "2".into(), ..Default::default() }, now);
         assert_eq!(t.streamed_bytes(), Some(234));
+    }
+
+    #[test]
+    fn upsert_ignores_new_ids_when_full() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        for i in 0..MAX_INFLIGHT {
+            t.apply(upsert(entry(&format!("id{i}"), "a", 0, 0)), now);
+        }
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        t.apply(upsert(entry("new", "b", 0, 0)), now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.views_for("b", now).is_empty(), "the new id is absent");
+        t.apply(upsert(entry("id0", "a", 77, 0)), now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.views_for("a", now).iter().any(|v| v.resp_bytes == 77), "known ids still update");
+    }
+
+    #[test]
+    fn snapshot_is_truncated_to_cap() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        let requests = (0..MAX_INFLIGHT + 5).map(|i| entry(&format!("id{i}"), "a", 0, 0)).collect();
+        t.apply(InflightMsg { operation: "snapshot".into(), requests, ..Default::default() }, now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.entries.contains_key("id0") && !t.entries.contains_key(&format!("id{MAX_INFLIGHT}")), "first entries kept");
+    }
+
+    #[test]
+    fn streamed_bytes_saturates() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        t.apply(upsert(InflightEntry { response_started: true, ..entry("1", "a", i64::MAX, 0) }), now);
+        t.apply(upsert(InflightEntry { response_started: true, ..entry("2", "a", i64::MAX, 0) }), now);
+        assert_eq!(t.streamed_bytes(), Some(i64::MAX));
     }
 
     #[test]
