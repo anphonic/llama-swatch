@@ -122,7 +122,7 @@ impl InflightTable {
     }
 
     fn upsert(&mut self, e: InflightEntry, prev: Option<Tracked>, now: Instant) {
-        if prev.is_none() && self.entries.len() >= MAX_INFLIGHT {
+        if !self.entries.contains_key(&e.id) && self.entries.len() >= MAX_INFLIGHT {
             return;
         }
         let tracked = match prev {
@@ -688,6 +688,23 @@ mod tests {
         t.apply(InflightMsg { operation: "snapshot".into(), requests, ..Default::default() }, now);
         assert_eq!(t.len(), MAX_INFLIGHT);
         assert!(t.entries.contains_key("id0") && !t.entries.contains_key(&format!("id{MAX_INFLIGHT}")), "first entries kept");
+    }
+
+    #[test]
+    fn snapshot_cap_holds_when_old_ids_follow_new() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        for i in 0..MAX_INFLIGHT {
+            t.apply(upsert(entry(&format!("a{i}"), "a", 0, 0)), now);
+        }
+        let requests = (0..MAX_INFLIGHT)
+            .map(|i| entry(&format!("b{i}"), "b", 0, 0))
+            .chain((0..MAX_INFLIGHT).map(|i| entry(&format!("a{i}"), "a", 0, 0)))
+            .collect();
+        t.apply(InflightMsg { operation: "snapshot".into(), requests, ..Default::default() }, now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.entries.contains_key("b0") && t.entries.contains_key(&format!("b{}", MAX_INFLIGHT - 1)));
+        assert!(!t.entries.contains_key("a0"));
     }
 
     #[test]
