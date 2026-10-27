@@ -163,9 +163,6 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
                 shared.publish();
                 // Fresh parser per connection: a dropped stream's partial frame must not leak.
                 let mut parser = SseParser::new();
-                // Flips once per connection: an oversized frame is dropped by the parser itself,
-                // but a server that only sends such frames must read as unreadable, not live.
-                let mut reported_overflow = false;
                 let mut stream = resp.bytes_stream();
                 while let Some(Ok(chunk)) = stream.next().await {
                     let mut changed = false;
@@ -186,8 +183,9 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
                             changed |= record_decode(&shared, ok);
                         }
                     }
-                    if parser.overflowed() && !reported_overflow {
-                        reported_overflow = true;
+                    // Each frame the parser dropped for size counts as one failed decode, so a
+                    // server that only sends oversized frames reads as unreadable, not live.
+                    for _ in 0..parser.take_overflows() {
                         changed |= record_decode(&shared, false);
                     }
                     if changed {

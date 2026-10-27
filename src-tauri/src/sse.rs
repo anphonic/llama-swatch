@@ -5,6 +5,7 @@
 //! Only the `data` field matters to us; `event`, `id`, `retry` and comments are ignored.
 
 /// Longest single line we buffer; a server that never sends `\n` cannot grow memory past this.
+/// The count includes a trailing `\r`.
 pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 /// Most `data` bytes one event may carry before it is dropped.
 pub const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
@@ -21,6 +22,8 @@ pub struct SseParser {
     /// The current event lost a line or grew too big; drop it at its blank line.
     drop_event: bool,
     overflowed: bool,
+    /// Lines and events dropped for size since the last `take_overflows`.
+    overflows: u32,
 }
 
 impl SseParser {
@@ -33,6 +36,11 @@ impl SseParser {
         self.overflowed
     }
 
+    /// Number of lines and events dropped for size since the last call; resets to 0.
+    pub fn take_overflows(&mut self) -> u32 {
+        std::mem::take(&mut self.overflows)
+    }
+
     #[cfg(test)]
     fn buffered_len(&self) -> usize {
         self.buf.len()
@@ -40,6 +48,7 @@ impl SseParser {
 
     fn overflow(&mut self) {
         self.overflowed = true;
+        self.overflows = self.overflows.saturating_add(1);
         self.drop_event = true;
         self.data.clear();
         self.data_bytes = 0;
@@ -48,34 +57,28 @@ impl SseParser {
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
+        // Lines are read in place and the consumed prefix is drained once at the end.
+        let mut start = 0;
         loop {
-            let Some(rel) = self.buf[self.scanned..].iter().position(|&b| b == b'\n') else {
-                if self.skipping_line {
-                    self.buf.clear();
-                } else if self.buf.len() > MAX_LINE_BYTES {
-                    self.overflow();
-                    self.skipping_line = true;
-                    self.buf.clear();
-                }
-                self.scanned = self.buf.len();
+            let from = start.max(self.scanned);
+            let Some(rel) = self.buf[from..].iter().position(|&b| b == b'\n') else {
                 break;
             };
-            let pos = self.scanned + rel;
-            let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
-            self.scanned = 0;
+            let pos = from + rel;
+            let mut raw = &self.buf[start..pos];
+            start = pos + 1;
             if self.skipping_line {
                 self.skipping_line = false;
                 continue;
             }
-            line.pop(); // '\n'
-            if line.last() == Some(&b'\r') {
-                line.pop();
+            if raw.last() == Some(&b'\r') {
+                raw = &raw[..raw.len() - 1];
             }
-            if line.len() > MAX_LINE_BYTES {
+            if raw.len() > MAX_LINE_BYTES {
                 self.overflow();
                 continue;
             }
-            let line = String::from_utf8_lossy(&line);
+            let line = String::from_utf8_lossy(raw).into_owned();
             if line.is_empty() {
                 if !self.drop_event && !self.data.is_empty() {
                     out.push(self.data.join("\n"));
@@ -104,6 +107,16 @@ impl SseParser {
                 }
             }
         }
+        self.buf.drain(..start);
+        // What is left has no newline: skip it if mid-way through a dropped line, or cap it.
+        if self.skipping_line {
+            self.buf.clear();
+        } else if self.buf.len() > MAX_LINE_BYTES {
+            self.overflow();
+            self.skipping_line = true;
+            self.buf.clear();
+        }
+        self.scanned = self.buf.len();
         out
     }
 }
@@ -225,5 +238,28 @@ mod tests {
         out.extend(p.push(b"data:b\n\n"));
         assert_eq!(out, vec!["a", "b"]);
         assert!(!p.overflowed());
+    }
+
+    #[test]
+    fn each_dropped_event_is_counted_once() {
+        let mut p = SseParser::new();
+        let mut big = b"data:".to_vec();
+        big.extend(vec![b'a'; MAX_LINE_BYTES + 10]);
+        big.extend_from_slice(b"\n\n");
+        for _ in 0..3 {
+            assert!(p.push(&big).is_empty());
+        }
+        assert_eq!(p.take_overflows(), 3);
+        assert_eq!(p.take_overflows(), 0);
+        assert!(p.overflowed());
+    }
+
+    #[test]
+    fn oversized_line_poisons_the_whole_event() {
+        let mut p = SseParser::new();
+        let mut input = b"data:x\ndata:".to_vec();
+        input.extend(vec![b'a'; MAX_LINE_BYTES + 10]);
+        input.extend_from_slice(b"\n\ndata:ok\n\n");
+        assert_eq!(p.push(&input), vec!["ok"]);
     }
 }
