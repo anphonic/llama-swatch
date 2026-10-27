@@ -19,6 +19,8 @@ export function renderSetup(
     autocomplete: "off",
     placeholder: view.hasKey ? "Saved — leave blank to keep it" : "Leave blank if llama-swap has no apiKeys",
   });
+  const plainHttpHint = h("span", { class: "hint warn" });
+  plainHttpHint.hidden = true;
   const removeKey = h("input", { id: "remove-key", type: "checkbox" });
   const poll = numberInput("poll", s.pollIntervalMs / 1000, 0.5, 60, 0.5);
   const load = numberInput("load", s.thresholds.loadTimeoutS, 5, 3600, 1);
@@ -90,8 +92,8 @@ export function renderSetup(
   const form = h(
     "form",
     {},
-    field("url", "llama-swap URL", url, "Where llama-swap listens, e.g. http://192.168.1.20:8080. A trailing /v1 or /ui is removed."),
-    field("key", "API key", key, "Only needed if llama-swap's config sets apiKeys. Stored in your OS keychain, never in a file."),
+    field("url", "llama-swap URL", url, "Where llama-swap listens, e.g. http://llama.example.test:8080. A trailing /v1 or /ui is removed."),
+    field("key", "API key", key, "Only needed if llama-swap's config sets apiKeys. Stored in your OS keychain, never in a file.", plainHttpHint),
     view.hasKey ? h("label", { class: "check" }, removeKey, "Remove the saved key") : null,
     field("poll", "Refresh every (seconds)", poll),
     h("label", { class: "check" }, checkUpdates, "Check GitHub for a new release at startup"),
@@ -116,6 +118,15 @@ export function renderSetup(
     status,
     h("div", { class: "actions" }, cancelBtn, testBtn, saveBtn),
   );
+
+  const updatePlainHttpHint = () => {
+    const risky = plainHttpRisk(url.value, key.value);
+    plainHttpHint.textContent = risky ? PLAIN_HTTP_WARNING : "";
+    plainHttpHint.hidden = !risky;
+  };
+  url.addEventListener("input", updatePlainHttpHint);
+  key.addEventListener("input", updatePlainHttpHint);
+  updatePlainHttpHint();
 
   const apiKeyValue = (): string | null => {
     if (removeKey.checked) return "";
@@ -259,6 +270,23 @@ export function renderSetup(
   );
 }
 
+const PLAIN_HTTP_WARNING = "This key will travel unencrypted over http://. Use https:// if the network isn't trusted.";
+
+/** True when a non-blank key would be sent over plain http to a host that isn't this machine. A warning only, never a block. */
+export function plainHttpRisk(url: string, key: string): boolean {
+  if (!key.trim()) return false;
+  const raw = url.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:") return false;
+  const host = parsed.hostname.toLowerCase();
+  return !(host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1" || host.endsWith(".localhost"));
+}
+
 const THEMES: ReadonlyArray<[Theme, string]> = [
   ["system", "Match system"],
   ["light", "Light"],
@@ -297,8 +325,8 @@ function numberInput(id: string, value: number, min: number, max: number, step: 
   return h("input", { id, type: "number", value: String(value), min: String(min), max: String(max), step: String(step) });
 }
 
-function field(id: string, label: string, input: HTMLElement, hint?: string): HTMLElement {
-  return h("div", { class: "field" }, h("label", { for: id }, label), input, hint ? h("span", { class: "hint" }, hint) : null);
+function field(id: string, label: string, input: HTMLElement, hint?: string, extra?: HTMLElement): HTMLElement {
+  return h("div", { class: "field" }, h("label", { for: id }, label), input, hint ? h("span", { class: "hint" }, hint) : null, extra ?? null);
 }
 
 /** Thresholds are whole seconds on the Rust side (u64). */
