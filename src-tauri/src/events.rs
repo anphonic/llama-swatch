@@ -208,12 +208,12 @@ pub fn health_signal(r: &Result<StreamEvent, serde_json::Error>) -> Option<bool>
 pub enum EventStream {
     /// Not connected, or the server has no `/api/events`.
     Offline,
-    /// Stream open, no in-flight snapshot or upsert decoded yet on this connection.
+    /// Stream open, no in-flight snapshot or upsert decoded yet on this connection (a quiet idle reconnect keeps the counts).
     Connected,
-    /// At least one in-flight snapshot or upsert decoded on this connection, and fewer than
+    /// At least one in-flight snapshot or upsert decoded on this connection (a quiet idle reconnect keeps the counts), and fewer than
     /// [`UNREADABLE_AFTER`] decode failures since the last success.
     Live,
-    /// [`UNREADABLE_AFTER`] or more events in a row on this connection failed to decode.
+    /// [`UNREADABLE_AFTER`] or more events in a row on this connection failed to decode (a quiet idle reconnect keeps the count).
     Unreadable,
 }
 
@@ -221,7 +221,7 @@ pub enum EventStream {
 /// change nothing; a third in a row means this llama-swap sends events we cannot read.
 pub const UNREADABLE_AFTER: u32 = 3;
 
-/// Per-connection decode bookkeeping behind [`EventStream`]. Holds only counts: payload and
+/// Per-connection decode bookkeeping (a quiet idle reconnect keeps it) behind [`EventStream`]. Holds only counts: payload and
 /// error text never reach it (payloads can carry request headers).
 ///
 /// Fed by [`health_signal`]: a success is an inflight `snapshot` or `upsert` whose entries all

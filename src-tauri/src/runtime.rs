@@ -274,7 +274,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn next_chunk_reports_idle_after_timeout() {
         let mut s = stream::pending::<Result<&'static [u8], ()>>();
+        let t = tokio::time::Instant::now();
         assert!(matches!(next_chunk(&mut s, EVENTS_IDLE_TIMEOUT).await, Next::Idle));
+        assert!(t.elapsed() >= EVENTS_IDLE_TIMEOUT);
     }
 
     #[tokio::test(start_paused = true)]
