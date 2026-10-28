@@ -22,6 +22,10 @@ const REFUSAL_KEY_READ_AHEAD: usize = 256;
 const REFUSAL_REASON_CHARS: usize = 200;
 /// Unloading waits for the upstream process to stop.
 const UNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+/// A JSON reply larger than this is refused, so a hostile or broken server cannot exhaust memory.
+const JSON_BODY_CAP: usize = 4 * 1024 * 1024;
+/// `/health` answers a few bytes; anything past this is not llama-swap.
+const HEALTH_BODY_CAP: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ClientError {
@@ -147,7 +151,7 @@ impl LlamaSwapClient {
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         let resp = Self::send(self.get(path).timeout(REQUEST_TIMEOUT)).await?;
-        let bytes = resp.bytes().await.map_err(|e| ClientError::Unreachable(describe(e)))?;
+        let bytes = read_limited(resp, JSON_BODY_CAP).await?;
         serde_json::from_slice(&bytes).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
@@ -155,7 +159,7 @@ impl LlamaSwapClient {
     pub async fn health(&self) -> Result<(String, Duration), ClientError> {
         let start = Instant::now();
         let resp = Self::send(self.get("/health").timeout(REQUEST_TIMEOUT)).await?;
-        let text = resp.text().await.map_err(|e| ClientError::Unreachable(describe(e)))?;
+        let text = String::from_utf8_lossy(&read_limited(resp, HEALTH_BODY_CAP).await?).into_owned();
         Ok((text, start.elapsed()))
     }
 
@@ -234,6 +238,20 @@ impl LlamaSwapClient {
     pub async fn events(&self) -> Result<Response, ClientError> {
         Self::send(self.get("/api/events").header("Accept", "text/event-stream")).await
     }
+}
+
+/// The whole body, refused as soon as it passes `cap` so no more than `cap` bytes are held. A
+/// separate reader from `read_capped`, which cannot tell "over the cap" from "read error". The
+/// errors carry no server bytes.
+async fn read_limited(mut resp: Response, cap: usize) -> Result<Vec<u8>, ClientError> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| ClientError::Unreachable(describe(e)))? {
+        if buf.len() + chunk.len() > cap {
+            return Err(ClientError::Decode(format!("reply larger than {} KB", cap / 1024)));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// At most `cap` bytes of the body, and whether it may have been cut short: true when the cap
@@ -531,6 +549,35 @@ mod tests {
         let resp = reqwest::get(server.uri()).await.unwrap();
         let (body, truncated) = read_capped(resp, 1_000_000).await;
         assert_eq!((body.len(), truncated), (100_000, false));
+    }
+
+    #[tokio::test]
+    async fn get_json_rejects_body_over_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/running")).respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(JSON_BODY_CAP + 1))).mount(&server).await;
+        let c = LlamaSwapClient::new(&server.uri(), None).unwrap();
+        let err = c.running().await.unwrap_err();
+        assert!(matches!(&err, ClientError::Decode(m) if m.contains("larger than")), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn health_rejects_body_over_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/health")).respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(HEALTH_BODY_CAP + 1))).mount(&server).await;
+        let c = LlamaSwapClient::new(&server.uri(), None).unwrap();
+        let err = c.health().await.unwrap_err();
+        assert!(matches!(err, ClientError::Decode(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn get_json_accepts_body_at_cap_boundary() {
+        let server = MockServer::start().await;
+        let mut body = String::from(r#"{"running":[]}"#);
+        body.push_str(&" ".repeat(JSON_BODY_CAP - body.len()));
+        assert_eq!(body.len(), JSON_BODY_CAP);
+        Mock::given(method("GET")).and(path("/running")).respond_with(ResponseTemplate::new(200).set_body_string(body)).mount(&server).await;
+        let c = LlamaSwapClient::new(&server.uri(), None).unwrap();
+        assert!(c.running().await.unwrap().is_empty());
     }
 
     /// Redacts `text` as a body that was cut short at the read cap.
