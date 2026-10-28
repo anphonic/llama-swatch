@@ -414,6 +414,29 @@ mod tests {
         assert_eq!(v["appVersion"], env!("CARGO_PKG_VERSION"));
     }
 
+    /// The footer shows Cargo's version; the installer and the npm package carry their own.
+    /// They must agree, or the version a user sees disagrees with the one they installed.
+    #[test]
+    fn version_is_semver_and_matches_tauri_conf_and_package_json() {
+        let version = env!("CARGO_PKG_VERSION");
+        let parts: Vec<&str> = version.split('.').collect();
+        assert_eq!(parts.len(), 3, "{version} is not x.y.z");
+        assert!(
+            parts.iter().all(|p| p.parse::<u64>().is_ok()),
+            "{version} is not x.y.z"
+        );
+        for (file, text) in [
+            ("tauri.conf.json", include_str!("../tauri.conf.json")),
+            ("package.json", include_str!("../../package.json")),
+        ] {
+            let json: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(
+                json["version"], version,
+                "{file} version differs from Cargo.toml"
+            );
+        }
+    }
+
     fn settings(url: &str) -> Settings {
         Settings { base_url: url.into(), ..Default::default() }
     }
