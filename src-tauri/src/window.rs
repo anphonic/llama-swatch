@@ -35,8 +35,11 @@ pub fn fit_inner_height(inner_h: u32, outer_h: u32, work_h: u32, min_inner: u32)
 
 /// Whether the top 40 px of `b` (where the title bar is) overlap a monitor (x, y, w, h).
 pub fn visible_on(b: &Bounds, monitors: &[(i32, i32, u32, u32)]) -> bool {
-    let (l, t, r, btm) = (b.x, b.y, b.x + b.width as i32, b.y + 40);
-    monitors.iter().any(|&(x, y, w, h)| l < x + w as i32 && r > x && t < y + h as i32 && btm > y)
+    let (l, t, r, btm) = (i64::from(b.x), i64::from(b.y), i64::from(b.x) + i64::from(b.width), i64::from(b.y) + 40);
+    monitors.iter().any(|&(x, y, w, h)| {
+        let (x, y) = (i64::from(x), i64::from(y));
+        l < x + i64::from(w) && r > x && t < y + i64::from(h) && btm > y
+    })
 }
 
 /// Frameless strip, anchored at the window's current top-left corner. Returns the bounds to
@@ -218,5 +221,14 @@ mod tests {
         assert!(!visible_on(&b(5000, 100), &monitors), "unplugged monitor to the right");
         assert!(!visible_on(&b(100, -900), &monitors), "title strip above every screen");
         assert!(!visible_on(&b(100, 100), &[]));
+    }
+
+    #[test]
+    fn visible_on_handles_extreme_values() {
+        let monitors = [(0, 0, 1920, 1080)];
+        let far = Bounds { x: i32::MAX - 10, y: 0, width: 100, height: 100, maximized: false };
+        assert!(!visible_on(&far, &monitors));
+        let wide = Bounds { x: -100, y: 0, width: u32::MAX, height: 10, maximized: false };
+        assert!(visible_on(&wide, &monitors));
     }
 }
