@@ -166,6 +166,8 @@ export interface SettingsView {
   configured: boolean;
   settings: Settings;
   hasKey: boolean;
+  /** This build's version, e.g. "0.4.0". */
+  appVersion: string;
 }
 
 export type TestResult =

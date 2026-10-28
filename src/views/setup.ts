@@ -256,6 +256,7 @@ export function renderSetup(
     h("h1", {}, "Connect to llama-swap"),
     h("p", { class: "muted" }, "Point the monitor at your llama-swap instance. Save checks the connection first."),
     form,
+    h("p", { class: "muted app-version" }, `Llama Swatch v${view.appVersion}`),
   );
 }
 

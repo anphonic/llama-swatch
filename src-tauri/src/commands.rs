@@ -43,6 +43,14 @@ pub struct SettingsView {
     pub configured: bool,
     pub settings: Settings,
     pub has_key: bool,
+    /// This build's version, the same one the update check compares against.
+    pub app_version: &'static str,
+}
+
+impl SettingsView {
+    fn new(configured: bool, settings: Settings, has_key: bool) -> Self {
+        Self { configured, settings, has_key, app_version: env!("CARGO_PKG_VERSION") }
+    }
 }
 
 /// `None` = keep the saved key (looked up under the *current* URL),
@@ -198,7 +206,7 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsView {
         .as_ref()
         .map(|s| matches!(state.secrets.get(&s.base_url), Ok(Some(_))))
         .unwrap_or(false);
-    SettingsView { configured: current.is_some(), settings: current.unwrap_or_default(), has_key }
+    SettingsView::new(current.is_some(), current.unwrap_or_default(), has_key)
 }
 
 /// Remembers the header pin button's state. The window itself is changed by the frontend
@@ -274,7 +282,7 @@ pub async fn save_settings(
         apply_settings(&state.config_path, state.secrets.as_ref(), settings, api_key).map_err(|e| e.to_string())?;
     let has_key = key.is_some();
     restart_monitor(&app, &state, &settings, key)?;
-    Ok(SettingsView { configured: true, settings, has_key })
+    Ok(SettingsView::new(true, settings, has_key))
 }
 
 #[tauri::command]
@@ -399,6 +407,12 @@ pub async fn unload_model(state: State<'_, AppState>, id: String) -> Result<(), 
 mod tests {
     use super::*;
     use crate::config::MemoryStore;
+
+    #[test]
+    fn settings_view_reports_this_builds_version() {
+        let v = serde_json::to_value(SettingsView::new(false, Settings::default(), false)).unwrap();
+        assert_eq!(v["appVersion"], env!("CARGO_PKG_VERSION"));
+    }
 
     fn settings(url: &str) -> Settings {
         Settings { base_url: url.into(), ..Default::default() }
