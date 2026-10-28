@@ -12,15 +12,16 @@ export function renderSetup(
   onCancel?: () => void,
 ): HTMLElement {
   const s = view.settings;
-  const url = h("input", { id: "url", type: "text", value: s.baseUrl, placeholder: "http://localhost:8080", autocomplete: "off", spellcheck: "false" });
+  const url = h("input", { id: "url", type: "text", value: s.baseUrl, placeholder: "http://localhost:8080", autocomplete: "off", spellcheck: "false", "aria-describedby": PLAIN_HTTP_HINT_ID });
   const key = h("input", {
     id: "key",
     type: "password",
     autocomplete: "off",
+    "aria-describedby": PLAIN_HTTP_HINT_ID,
     placeholder: view.hasKey ? "Saved — leave blank to keep it" : "Leave blank if llama-swap has no apiKeys",
   });
-  const plainHttpHint = h("span", { class: "hint warn" });
-  plainHttpHint.hidden = true;
+  // A live region stays in the tree and only its text changes, so screen readers announce the warning as it appears.
+  const plainHttpHint = h("span", { id: PLAIN_HTTP_HINT_ID, class: "hint warn", role: "status" });
   const removeKey = h("input", { id: "remove-key", type: "checkbox" });
   const poll = numberInput("poll", s.pollIntervalMs / 1000, 0.5, 60, 0.5);
   const load = numberInput("load", s.thresholds.loadTimeoutS, 5, 3600, 1);
@@ -120,9 +121,9 @@ export function renderSetup(
   );
 
   const updatePlainHttpHint = () => {
-    const risky = plainHttpRisk(url.value, key.value);
-    plainHttpHint.textContent = risky ? PLAIN_HTTP_WARNING : "";
-    plainHttpHint.hidden = !risky;
+    const text = plainHttpRisk(url.value, key.value) ? PLAIN_HTTP_WARNING : "";
+    // Rewriting the same text would re-announce it on every keystroke.
+    if (plainHttpHint.textContent !== text) plainHttpHint.textContent = text;
   };
   url.addEventListener("input", updatePlainHttpHint);
   key.addEventListener("input", updatePlainHttpHint);
@@ -270,6 +271,7 @@ export function renderSetup(
   );
 }
 
+const PLAIN_HTTP_HINT_ID = "plain-http-hint";
 const PLAIN_HTTP_WARNING = "This key will travel unencrypted over http://. Use https:// if the network isn't trusted.";
 
 /** True when a non-blank key would be sent over plain http to a host that isn't this machine. A warning only, never a block. */
