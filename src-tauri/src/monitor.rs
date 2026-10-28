@@ -184,7 +184,7 @@ impl MonitorState {
         self.inflight.apply(msg, now);
     }
 
-    /// The event stream (re)connected: decode counts start over.
+    /// The event stream (re)connected: decode counts start over, except after a quiet idle reconnect, which keeps them.
     pub fn events_connected(&mut self) {
         self.events.connect();
     }

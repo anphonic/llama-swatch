@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use tauri::async_runtime::{spawn, JoinHandle};
 use tokio::sync::Notify;
 
@@ -13,7 +13,7 @@ use crate::client::{ClientError, LlamaSwapClient};
 use crate::events::{decode_event, health_signal, EventStream, StreamEvent};
 use crate::monitor::{MonitorState, Snapshot};
 use crate::poller::{poll_once, Feature, PollOutcome};
-use crate::sse::SseParser;
+use crate::sse::{Frame, SseParser};
 use crate::state::Thresholds;
 
 pub const MODELS_REFRESH: Duration = Duration::from_secs(30);
@@ -21,6 +21,8 @@ const UNAUTHORIZED_RETRY: Duration = Duration::from_secs(30);
 const EVENTS_UNAVAILABLE_RETRY: Duration = Duration::from_secs(60);
 /// Bound on waiting for the event stream's response headers.
 const EVENTS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// llama-swap can stay quiet for minutes when idle; a stream silent this long is presumed dead.
+const EVENTS_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const BACKOFF_BASE: Duration = Duration::from_secs(2);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
@@ -147,8 +149,29 @@ async fn poll_loop(client: LlamaSwapClient, shared: Arc<Shared>, interval: Durat
     }
 }
 
+/// What the event stream produced next. `Ended` covers both end of stream and a stream error.
+enum Next<B> {
+    Chunk(B),
+    Ended,
+    Idle,
+}
+
+async fn next_chunk<S, B, E>(stream: &mut S, idle: Duration) -> Next<B>
+where
+    S: Stream<Item = Result<B, E>> + Unpin,
+{
+    match tokio::time::timeout(idle, stream.next()).await {
+        Ok(Some(Ok(chunk))) => Next::Chunk(chunk),
+        Ok(_) => Next::Ended,
+        Err(_) => Next::Idle,
+    }
+}
+
 async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
+    // Set after an idle timeout: reconnect without telling the UI, since a quiet server must
+    // not flicker the connection state.
+    let mut quiet = false;
     loop {
         // A server that accepts TCP but never sends headers must not hang this loop.
         let connected = match tokio::time::timeout(EVENTS_CONNECT_TIMEOUT, client.events()).await {
@@ -157,16 +180,36 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
         };
         let delay = match connected {
             Ok(resp) => {
-                backoff.reset();
-                // Connected, not live: live is earned by the first event that decodes.
-                shared.with_state(|s| s.events_connected());
-                shared.publish();
+                if !quiet {
+                    backoff.reset();
+                    // Connected, not live: live is earned by the first event that decodes.
+                    shared.with_state(|s| s.events_connected());
+                    shared.publish();
+                }
+                // A quiet reconnect keeps decode health and the in-flight table; the new
+                // connection's first snapshot replaces the table.
+                quiet = false;
                 // Fresh parser per connection: a dropped stream's partial frame must not leak.
                 let mut parser = SseParser::new();
                 let mut stream = resp.bytes_stream();
-                while let Some(Ok(chunk)) = stream.next().await {
+                let idle = loop {
+                    let chunk = match next_chunk(&mut stream, EVENTS_IDLE_TIMEOUT).await {
+                        Next::Chunk(chunk) => chunk,
+                        Next::Ended => break false,
+                        Next::Idle => break true,
+                    };
                     let mut changed = false;
-                    for payload in parser.push(&chunk) {
+                    for frame in parser.push(&chunk) {
+                        // Each frame dropped for size counts as one failed decode, in stream
+                        // order, so a server that only sends oversized frames reads as
+                        // unreadable, not live.
+                        let payload = match frame {
+                            Frame::Data(payload) => payload,
+                            Frame::Dropped => {
+                                changed |= record_decode(&shared, false);
+                                continue;
+                            }
+                        };
                         // Only the outcome is kept: payloads can carry request headers, so
                         // neither they nor serde's error text (which may quote them) leave here.
                         let result = decode_event(&payload);
@@ -186,13 +229,28 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
                     if changed {
                         shared.publish();
                     }
+                };
+                if idle {
+                    quiet = true;
+                    Duration::ZERO
+                } else {
+                    shared.with_state(|s| s.events_disconnected());
+                    shared.publish();
+                    backoff.next_delay()
                 }
-                shared.with_state(|s| s.events_disconnected());
-                shared.publish();
-                backoff.next_delay()
             }
-            Err(ClientError::NotFound) => EVENTS_UNAVAILABLE_RETRY,
-            Err(_) => backoff.next_delay(),
+            Err(e) => {
+                // A failed quiet reconnect takes the normal failure path.
+                if quiet {
+                    quiet = false;
+                    shared.with_state(|s| s.events_disconnected());
+                    shared.publish();
+                }
+                match e {
+                    ClientError::NotFound => EVENTS_UNAVAILABLE_RETRY,
+                    _ => backoff.next_delay(),
+                }
+            }
         };
         tokio::time::sleep(delay).await;
     }
@@ -211,4 +269,31 @@ fn record_decode(shared: &Shared, ok: bool) -> bool {
         );
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+
+    #[tokio::test(start_paused = true)]
+    async fn next_chunk_reports_idle_after_timeout() {
+        let mut s = stream::pending::<Result<&'static [u8], ()>>();
+        let t = tokio::time::Instant::now();
+        assert!(matches!(next_chunk(&mut s, EVENTS_IDLE_TIMEOUT).await, Next::Idle));
+        assert!(t.elapsed() >= EVENTS_IDLE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_chunk_passes_chunks_and_end() {
+        let mut s = stream::iter([Ok::<_, ()>(&b"a"[..])]);
+        assert!(matches!(next_chunk(&mut s, EVENTS_IDLE_TIMEOUT).await, Next::Chunk(b"a")));
+        assert!(matches!(next_chunk(&mut s, EVENTS_IDLE_TIMEOUT).await, Next::Ended));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_chunk_treats_a_stream_error_as_ended() {
+        let mut s = stream::iter([Err::<&'static [u8], _>(())]);
+        assert!(matches!(next_chunk(&mut s, EVENTS_IDLE_TIMEOUT).await, Next::Ended));
+    }
 }

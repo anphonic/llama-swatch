@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -194,33 +195,62 @@ pub fn load_settings(path: &Path) -> Option<Settings> {
     settings.sanitized().ok()
 }
 
-/// Atomic write: temp file then rename, so a crash never leaves half a file.
+/// Serializes every settings read-modify-write so concurrent savers cannot lose each other's fields.
+static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn lock_writes() -> std::sync::MutexGuard<'static, ()> {
+    SETTINGS_WRITE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Atomic write: unique temp file, fsync, then rename, so a crash never leaves half a file.
 pub fn save_settings(path: &Path, s: &Settings) -> Result<(), ConfigError> {
+    let _guard = lock_writes();
+    write_settings(path, s)
+}
+
+/// The write itself; the caller holds `SETTINGS_WRITE` (see `lock_writes`).
+pub(crate) fn write_settings(path: &Path, s: &Settings) -> Result<(), ConfigError> {
+    use std::io::Write;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("json.tmp");
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.{n}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
     let json = serde_json::to_string_pretty(s).map_err(io::Error::other)?;
-    fs::write(&tmp, json)?;
-    fs::rename(&tmp, path)?;
+    let result = (|| -> io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })();
+    if let Err(e) = result {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
 /// Persists only the pin flag. Does nothing (returns `Ok(false)`) while unconfigured, so toggling
 /// the pin can never create a settings file with a made-up server URL.
 pub fn save_always_on_top(path: &Path, on: bool) -> Result<bool, ConfigError> {
+    let _guard = lock_writes();
     match load_settings(path) {
         Some(s) if s.always_on_top == on => Ok(true),
-        Some(s) => save_settings(path, &Settings { always_on_top: on, ..s }).map(|()| true),
+        Some(s) => write_settings(path, &Settings { always_on_top: on, ..s }).map(|()| true),
         None => Ok(false),
     }
 }
 
 /// Persists only the update-check answer, like `save_always_on_top`.
 pub fn save_check_for_updates(path: &Path, on: bool) -> Result<bool, ConfigError> {
+    let _guard = lock_writes();
     match load_settings(path) {
         Some(s) if s.check_for_updates == Some(on) => Ok(true),
-        Some(s) => save_settings(path, &Settings { check_for_updates: Some(on), ..s }).map(|()| true),
+        Some(s) => write_settings(path, &Settings { check_for_updates: Some(on), ..s }).map(|()| true),
         None => Ok(false),
     }
 }
@@ -228,10 +258,11 @@ pub fn save_check_for_updates(path: &Path, on: bool) -> Result<bool, ConfigError
 /// Persists only the skin choice, like `save_always_on_top`. `full`: the skin uses the full
 /// layout, so it also becomes the one "Full dashboard" returns to.
 pub fn save_skin(path: &Path, skin: &str, full: bool) -> Result<bool, ConfigError> {
+    let _guard = lock_writes();
     match load_settings(path) {
         Some(s) => {
             let last_full_skin = if full { skin.to_string() } else { s.last_full_skin.clone() };
-            save_settings(path, &Settings { skin: skin.to_string(), last_full_skin, ..s }).map(|()| true)
+            write_settings(path, &Settings { skin: skin.to_string(), last_full_skin, ..s }).map(|()| true)
         }
         None => Ok(false),
     }
@@ -239,9 +270,10 @@ pub fn save_skin(path: &Path, skin: &str, full: bool) -> Result<bool, ConfigErro
 
 /// Persists only the full-layout window rect.
 pub fn save_full_bounds(path: &Path, full_bounds: Option<Bounds>) -> Result<bool, ConfigError> {
+    let _guard = lock_writes();
     match load_settings(path) {
         Some(s) if s.full_bounds == full_bounds => Ok(true),
-        Some(s) => save_settings(path, &Settings { full_bounds, ..s }).map(|()| true),
+        Some(s) => write_settings(path, &Settings { full_bounds, ..s }).map(|()| true),
         None => Ok(false),
     }
 }
@@ -388,7 +420,55 @@ mod tests {
         let s = Settings { base_url: "http://box:8080".into(), poll_interval_ms: 3000, thresholds: Thresholds::default(), always_on_top: true, check_for_updates: Some(false), theme: Theme::Dark, ..Default::default() };
         save_settings(&path, &s).unwrap();
         assert_eq!(load_settings(&path), Some(s));
-        assert!(!path.with_extension("json.tmp").exists(), "temp file is renamed away");
+    }
+
+    #[test]
+    fn concurrent_saves_all_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        save_settings(&path, &Settings { base_url: "http://box:8080".into(), ..Default::default() }).unwrap();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                for i in 0..50 {
+                    save_always_on_top(&path, i == 49).unwrap();
+                }
+            });
+            sc.spawn(|| {
+                for i in 0..50 {
+                    save_check_for_updates(&path, i == 49).unwrap();
+                }
+            });
+            sc.spawn(|| {
+                for i in 0..50 {
+                    save_skin(&path, &format!("builtin:s{i}"), true).unwrap();
+                }
+            });
+            for _ in 0..5 {
+                sc.spawn(|| {
+                    for _ in 0..50 {
+                        save_full_bounds(&path, None).unwrap();
+                    }
+                });
+            }
+        });
+        let s = load_settings(&path).expect("file still loads");
+        assert!(s.always_on_top);
+        assert_eq!(s.check_for_updates, Some(true));
+        assert_eq!(s.skin, "builtin:s49");
+        assert_eq!(s.last_full_skin, "builtin:s49");
+    }
+
+    #[test]
+    fn save_leaves_no_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let s = Settings { base_url: "http://box:8080".into(), ..Default::default() };
+        for _ in 0..5 {
+            save_settings(&path, &s).unwrap();
+        }
+        save_always_on_top(&path, true).unwrap();
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("settings.json")]);
     }
 
     #[test]

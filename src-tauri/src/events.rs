@@ -88,6 +88,9 @@ struct Tracked {
     last_bytes_change: Instant,
 }
 
+/// Most in-flight requests tracked at once; the server controls the event stream, so the table must not grow without bound.
+pub const MAX_INFLIGHT: usize = 1024;
+
 /// In-flight requests keyed by llama-swap request ID. Times are local
 /// `Instant`s, so server/client clock skew never matters.
 #[derive(Debug, Default)]
@@ -119,6 +122,9 @@ impl InflightTable {
     }
 
     fn upsert(&mut self, e: InflightEntry, prev: Option<Tracked>, now: Instant) {
+        if !self.entries.contains_key(&e.id) && self.entries.len() >= MAX_INFLIGHT {
+            return;
+        }
         let tracked = match prev {
             Some(p) => Tracked {
                 last_bytes_change: if e.resp_bytes != p.entry.resp_bytes { now } else { p.last_bytes_change },
@@ -151,7 +157,7 @@ impl InflightTable {
     pub fn streamed_bytes(&self) -> Option<i64> {
         let mut started = self.entries.values().filter(|t| t.entry.response_started).peekable();
         started.peek()?;
-        Some(started.map(|t| t.entry.resp_bytes).sum())
+        Some(started.fold(0i64, |acc, t| acc.saturating_add(t.entry.resp_bytes)))
     }
 
     pub fn clear(&mut self) {
@@ -202,12 +208,12 @@ pub fn health_signal(r: &Result<StreamEvent, serde_json::Error>) -> Option<bool>
 pub enum EventStream {
     /// Not connected, or the server has no `/api/events`.
     Offline,
-    /// Stream open, no in-flight snapshot or upsert decoded yet on this connection.
+    /// Stream open, no in-flight snapshot or upsert decoded yet on this connection (a quiet idle reconnect keeps the counts).
     Connected,
-    /// At least one in-flight snapshot or upsert decoded on this connection, and fewer than
+    /// At least one in-flight snapshot or upsert decoded on this connection (a quiet idle reconnect keeps the counts), and fewer than
     /// [`UNREADABLE_AFTER`] decode failures since the last success.
     Live,
-    /// [`UNREADABLE_AFTER`] or more events in a row on this connection failed to decode.
+    /// [`UNREADABLE_AFTER`] or more events in a row on this connection failed to decode (a quiet idle reconnect keeps the count).
     Unreadable,
 }
 
@@ -215,7 +221,7 @@ pub enum EventStream {
 /// change nothing; a third in a row means this llama-swap sends events we cannot read.
 pub const UNREADABLE_AFTER: u32 = 3;
 
-/// Per-connection decode bookkeeping behind [`EventStream`]. Holds only counts: payload and
+/// Per-connection decode bookkeeping (a quiet idle reconnect keeps it) behind [`EventStream`]. Holds only counts: payload and
 /// error text never reach it (payloads can carry request headers).
 ///
 /// Fed by [`health_signal`]: a success is an inflight `snapshot` or `upsert` whose entries all
@@ -656,6 +662,58 @@ mod tests {
         assert_eq!(t.streamed_bytes(), Some(1234), "summed across models");
         t.apply(InflightMsg { operation: "remove".into(), id: "2".into(), ..Default::default() }, now);
         assert_eq!(t.streamed_bytes(), Some(234));
+    }
+
+    #[test]
+    fn upsert_ignores_new_ids_when_full() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        for i in 0..MAX_INFLIGHT {
+            t.apply(upsert(entry(&format!("id{i}"), "a", 0, 0)), now);
+        }
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        t.apply(upsert(entry("new", "b", 0, 0)), now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.views_for("b", now).is_empty(), "the new id is absent");
+        t.apply(upsert(entry("id0", "a", 77, 0)), now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.views_for("a", now).iter().any(|v| v.resp_bytes == 77), "known ids still update");
+    }
+
+    #[test]
+    fn snapshot_is_truncated_to_cap() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        let requests = (0..MAX_INFLIGHT + 5).map(|i| entry(&format!("id{i}"), "a", 0, 0)).collect();
+        t.apply(InflightMsg { operation: "snapshot".into(), requests, ..Default::default() }, now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.entries.contains_key("id0") && !t.entries.contains_key(&format!("id{MAX_INFLIGHT}")), "first entries kept");
+    }
+
+    #[test]
+    fn snapshot_cap_holds_when_old_ids_follow_new() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        for i in 0..MAX_INFLIGHT {
+            t.apply(upsert(entry(&format!("a{i}"), "a", 0, 0)), now);
+        }
+        let requests = (0..MAX_INFLIGHT)
+            .map(|i| entry(&format!("b{i}"), "b", 0, 0))
+            .chain((0..MAX_INFLIGHT).map(|i| entry(&format!("a{i}"), "a", 0, 0)))
+            .collect();
+        t.apply(InflightMsg { operation: "snapshot".into(), requests, ..Default::default() }, now);
+        assert_eq!(t.len(), MAX_INFLIGHT);
+        assert!(t.entries.contains_key("b0") && t.entries.contains_key(&format!("b{}", MAX_INFLIGHT - 1)));
+        assert!(!t.entries.contains_key("a0"));
+    }
+
+    #[test]
+    fn streamed_bytes_saturates() {
+        let now = Instant::now();
+        let mut t = InflightTable::default();
+        t.apply(upsert(InflightEntry { response_started: true, ..entry("1", "a", i64::MAX, 0) }), now);
+        t.apply(upsert(InflightEntry { response_started: true, ..entry("2", "a", i64::MAX, 0) }), now);
+        assert_eq!(t.streamed_bytes(), Some(i64::MAX));
     }
 
     #[test]

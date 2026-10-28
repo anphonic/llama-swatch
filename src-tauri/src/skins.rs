@@ -107,6 +107,22 @@ pub fn builtins() -> Vec<Skin> {
     ]
 }
 
+/// Whether `id` names a built-in skin or a plausible `file:<name>.json` skin. Only the shape is
+/// checked, not that the file exists.
+pub fn is_valid_skin_id(id: &str) -> bool {
+    if builtins().iter().any(|s| s.id == id) {
+        return true;
+    }
+    let Some(name) = id.strip_prefix("file:") else { return false };
+    let bytes = name.as_bytes();
+    (1..=255).contains(&bytes.len())
+        && bytes.len() > 5
+        && bytes[bytes.len() - 5..].eq_ignore_ascii_case(b".json")
+        // No separators means a single path segment, and a `.json` name can't be `..` itself.
+        && !name.contains(['/', '\\', ':'])
+        && !name.chars().any(char::is_control)
+}
+
 /// `#rgb` or `#rrggbb`. Rejects everything else, including `url(...)`, `var(...)` and names.
 fn is_hex(s: &str) -> bool {
     let Some(rest) = s.strip_prefix('#') else { return false };
@@ -135,6 +151,10 @@ fn present<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
 }
 
 pub fn parse_skin(file_name: &str, bytes: &[u8]) -> Result<Skin, String> {
+    // Never offer a skin that `set_skin` would then refuse.
+    if !is_valid_skin_id(&format!("file:{file_name}")) {
+        return Err("unsupported file name".into());
+    }
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err("larger than 16 KB".into());
     }
@@ -224,6 +244,17 @@ mod tests {
 
     fn parse(json: &str) -> Result<Skin, String> {
         parse_skin("t.json", json.as_bytes())
+    }
+
+    #[test]
+    fn skin_id_validation() {
+        for ok in ["builtin:standard", "file:My Skin.json", "file:a.JSON", "file:palette..v2.json"] {
+            assert!(is_valid_skin_id(ok), "{ok}");
+        }
+        let long = format!("file:{}.json", "a".repeat(300));
+        for bad in ["", "builtin:nope", "file:../x.json", "file:a/b.json", "file:a\\b.json", "file:x.txt", "file:.json", "file:a:b.json", "other", long.as_str()] {
+            assert!(!is_valid_skin_id(bad), "{bad}");
+        }
     }
 
     #[test]
@@ -350,6 +381,20 @@ mod tests {
         assert_eq!(l.skipped.len(), 3);
         assert!(l.skipped.iter().all(|k| k.reason == "too many skin files"));
         assert_eq!(l.skipped[0].file, format!("s{:04}.json", MAX_SKIN_FILES));
+    }
+
+    #[test]
+    fn listed_skins_always_have_ids_set_skin_accepts() {
+        let json = br#"{"name":"N"}"#;
+        assert_eq!(parse_skin("a:b.json", json).unwrap_err(), "unsupported file name");
+        let dir = std::env::temp_dir().join(format!("swatch-skin-ids-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("palette..v2.json"), json).unwrap();
+        let l = list(&dir);
+        assert!(l.skins.iter().any(|s| s.id == "file:palette..v2.json"));
+        assert!(l.skins.iter().all(|s| is_valid_skin_id(&s.id)));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

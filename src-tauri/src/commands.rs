@@ -43,6 +43,14 @@ pub struct SettingsView {
     pub configured: bool,
     pub settings: Settings,
     pub has_key: bool,
+    /// This build's version, the same one the update check compares against.
+    pub app_version: &'static str,
+}
+
+impl SettingsView {
+    fn new(configured: bool, settings: Settings, has_key: bool) -> Self {
+        Self { configured, settings, has_key, app_version: env!("CARGO_PKG_VERSION") }
+    }
 }
 
 /// `None` = keep the saved key (looked up under the *current* URL),
@@ -87,6 +95,8 @@ pub fn apply_settings(
     settings: Settings,
     api_key: Option<String>,
 ) -> Result<(Settings, Option<String>), ConfigError> {
+    // Held from the load to the write, so a concurrent field save cannot land in between and be lost.
+    let _guard = config::lock_writes();
     let current = load_settings(path);
     let settings = settings.sanitized()?;
     // The form never edits the saved window rect and may hold a stale copy.
@@ -109,7 +119,7 @@ pub fn apply_settings(
         None => None,
     };
 
-    config::save_settings(path, &settings)?;
+    config::write_settings(path, &settings)?;
 
     // Best effort: a keychain failure here must not fail an already-saved config.
     if key.is_none() {
@@ -198,7 +208,7 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsView {
         .as_ref()
         .map(|s| matches!(state.secrets.get(&s.base_url), Ok(Some(_))))
         .unwrap_or(false);
-    SettingsView { configured: current.is_some(), settings: current.unwrap_or_default(), has_key }
+    SettingsView::new(current.is_some(), current.unwrap_or_default(), has_key)
 }
 
 /// Remembers the header pin button's state. The window itself is changed by the frontend
@@ -218,6 +228,9 @@ pub async fn list_skins(state: State<'_, AppState>) -> Result<crate::skins::Skin
 /// Saves only the skin choice (the Mini menu's "Full dashboard" works while llama-swap is down).
 #[tauri::command]
 pub fn set_skin(state: State<'_, AppState>, skin: String, full: bool) -> Result<(), String> {
+    if !crate::skins::is_valid_skin_id(&skin) {
+        return Err("unknown skin".into());
+    }
     match config::save_skin(&state.config_path, &skin, full) {
         Ok(true) => Ok(()),
         Ok(false) => Err("the settings file could not be read".into()),
@@ -274,7 +287,7 @@ pub async fn save_settings(
         apply_settings(&state.config_path, state.secrets.as_ref(), settings, api_key).map_err(|e| e.to_string())?;
     let has_key = key.is_some();
     restart_monitor(&app, &state, &settings, key)?;
-    Ok(SettingsView { configured: true, settings, has_key })
+    Ok(SettingsView::new(true, settings, has_key))
 }
 
 #[tauri::command]
@@ -399,6 +412,35 @@ pub async fn unload_model(state: State<'_, AppState>, id: String) -> Result<(), 
 mod tests {
     use super::*;
     use crate::config::MemoryStore;
+
+    #[test]
+    fn settings_view_reports_this_builds_version() {
+        let v = serde_json::to_value(SettingsView::new(false, Settings::default(), false)).unwrap();
+        assert_eq!(v["appVersion"], env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The footer shows Cargo's version; the installer and the npm package carry their own.
+    /// They must agree, or the version a user sees disagrees with the one they installed.
+    #[test]
+    fn version_is_semver_and_matches_tauri_conf_and_package_json() {
+        let version = env!("CARGO_PKG_VERSION");
+        let parts: Vec<&str> = version.split('.').collect();
+        assert_eq!(parts.len(), 3, "{version} is not x.y.z");
+        assert!(
+            parts.iter().all(|p| p.parse::<u64>().is_ok()),
+            "{version} is not x.y.z"
+        );
+        for (file, text) in [
+            ("tauri.conf.json", include_str!("../tauri.conf.json")),
+            ("package.json", include_str!("../../package.json")),
+        ] {
+            let json: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(
+                json["version"], version,
+                "{file} version differs from Cargo.toml"
+            );
+        }
+    }
 
     fn settings(url: &str) -> Settings {
         Settings { base_url: url.into(), ..Default::default() }
@@ -581,10 +623,44 @@ mod tests {
         let path = dir.path().join("settings.json");
         let store = MemoryStore::default();
         apply_settings(&path, &store, settings("http://old:8080"), Some("k1".into())).unwrap();
-        // Make the atomic rename fail by putting a directory where the tmp file goes.
-        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        assert!(apply_settings(&path, &store, settings("http://new:8080"), Some("k2".into())).is_err());
+        // Keep the old file loadable but make the final rename fail.
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+        #[cfg(unix)]
+        let dir_perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = dir_perms.clone();
+            p.set_mode(0o555);
+            std::fs::set_permissions(dir.path(), p).unwrap();
+        }
+        let r = apply_settings(&path, &store, settings("http://new:8080"), Some("k2".into()));
+        // Restore so the temp dir can be cleaned up.
+        #[cfg(unix)]
+        std::fs::set_permissions(dir.path(), dir_perms).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+        assert!(matches!(r, Err(ConfigError::Io(_))), "the write failed, not an earlier step: {r:?}");
+        assert_eq!(load_settings(&path).unwrap().base_url, "http://old:8080", "old file intact");
         assert_eq!(store.get("http://old:8080").unwrap().as_deref(), Some("k1"));
+    }
+
+    #[test]
+    fn apply_settings_keeps_full_bounds_written_by_another_saver() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = MemoryStore::default();
+        apply_settings(&path, &store, settings("http://box:8080"), None).unwrap();
+        let b = config::Bounds { x: 5, y: 6, width: 700, height: 500, maximized: false };
+        config::save_full_bounds(&path, Some(b)).unwrap();
+        // The form carries a stale (empty) rect.
+        let (saved, _) = apply_settings(&path, &store, settings("http://box:8080"), None).unwrap();
+        assert_eq!(saved.full_bounds, Some(b));
+        assert_eq!(load_settings(&path).unwrap().full_bounds, Some(b));
     }
 
     #[test]

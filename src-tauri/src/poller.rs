@@ -54,7 +54,7 @@ fn version_feature(r: Result<VersionInfo, ClientError>) -> Feature<VersionInfo> 
 fn log_decode(endpoint: &str, e: &ClientError) {
     // serde messages describe the JSON shape only; they never contain the key.
     if let ClientError::Decode(m) = e {
-        eprintln!("llama-swap {endpoint} returned malformed JSON: {m}");
+        eprintln!("llama-swap {endpoint} returned an unreadable reply: {m}");
     }
 }
 
