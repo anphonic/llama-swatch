@@ -116,8 +116,8 @@ pub fn is_valid_skin_id(id: &str) -> bool {
     (1..=255).contains(&bytes.len())
         && bytes.len() > 5
         && bytes[bytes.len() - 5..].eq_ignore_ascii_case(b".json")
+        // No separators means a single path segment, and a `.json` name can't be `..` itself.
         && !name.contains(['/', '\\', ':'])
-        && !name.contains("..")
         && !name.chars().any(char::is_control)
 }
 
@@ -149,6 +149,10 @@ fn present<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
 }
 
 pub fn parse_skin(file_name: &str, bytes: &[u8]) -> Result<Skin, String> {
+    // Never offer a skin that `set_skin` would then refuse.
+    if !is_valid_skin_id(&format!("file:{file_name}")) {
+        return Err("unsupported file name".into());
+    }
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err("larger than 16 KB".into());
     }
@@ -226,7 +230,7 @@ mod tests {
 
     #[test]
     fn skin_id_validation() {
-        for ok in ["builtin:standard", "file:My Skin.json", "file:a.JSON"] {
+        for ok in ["builtin:standard", "file:My Skin.json", "file:a.JSON", "file:palette..v2.json"] {
             assert!(is_valid_skin_id(ok), "{ok}");
         }
         let long = format!("file:{}.json", "a".repeat(300));
@@ -323,6 +327,20 @@ mod tests {
         let names: Vec<&str> = l.skins.iter().skip(builtins().len()).map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["alpha", "Beta"]);
         assert_eq!(l.skipped, [Skipped { file: "bad.json".into(), reason: "colour `bg` isn't a hex value".into() }]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn listed_skins_always_have_ids_set_skin_accepts() {
+        let json = br#"{"name":"N"}"#;
+        assert_eq!(parse_skin("a:b.json", json).unwrap_err(), "unsupported file name");
+        let dir = std::env::temp_dir().join(format!("swatch-skin-ids-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("palette..v2.json"), json).unwrap();
+        let l = list(&dir);
+        assert!(l.skins.iter().any(|s| s.id == "file:palette..v2.json"));
+        assert!(l.skins.iter().all(|s| is_valid_skin_id(&s.id)));
         fs::remove_dir_all(&dir).unwrap();
     }
 
