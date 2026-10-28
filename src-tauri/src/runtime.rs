@@ -13,7 +13,7 @@ use crate::client::{ClientError, LlamaSwapClient};
 use crate::events::{decode_event, health_signal, EventStream, StreamEvent};
 use crate::monitor::{MonitorState, Snapshot};
 use crate::poller::{poll_once, Feature, PollOutcome};
-use crate::sse::SseParser;
+use crate::sse::{Frame, SseParser};
 use crate::state::Thresholds;
 
 pub const MODELS_REFRESH: Duration = Duration::from_secs(30);
@@ -199,7 +199,17 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
                         Next::Idle => break true,
                     };
                     let mut changed = false;
-                    for payload in parser.push(&chunk) {
+                    for frame in parser.push(&chunk) {
+                        // Each frame dropped for size counts as one failed decode, in stream
+                        // order, so a server that only sends oversized frames reads as
+                        // unreadable, not live.
+                        let payload = match frame {
+                            Frame::Data(payload) => payload,
+                            Frame::Dropped => {
+                                changed |= record_decode(&shared, false);
+                                continue;
+                            }
+                        };
                         // Only the outcome is kept: payloads can carry request headers, so
                         // neither they nor serde's error text (which may quote them) leave here.
                         let result = decode_event(&payload);
@@ -215,11 +225,6 @@ async fn event_loop(client: LlamaSwapClient, shared: Arc<Shared>) {
                         if let Some(ok) = signal {
                             changed |= record_decode(&shared, ok);
                         }
-                    }
-                    // Each frame the parser dropped for size counts as one failed decode, so a
-                    // server that only sends oversized frames reads as unreadable, not live.
-                    for _ in 0..parser.take_overflows() {
-                        changed |= record_decode(&shared, false);
                     }
                     if changed {
                         shared.publish();
