@@ -231,6 +231,7 @@ input, .field select {
 .folder-row input { flex: 1; min-width: 0; }
 .skins-skipped { margin: 4px 0 0; padding-left: 18px; color: var(--amber-text); font-size: 12px; }
 .actions { display: flex; gap: 8px; justify-content: flex-end; }
+.app-version { margin: 24px 0 0; font-size: 12px; text-align: center; }
 .form-status { min-height: 1.4em; margin: 0; }
 .form-status[data-kind="ok"] { color: var(--green); }
 .form-status[data-kind="error"] { color: var(--red); }
