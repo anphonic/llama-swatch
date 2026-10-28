@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 use serde::Serialize;
@@ -16,6 +16,8 @@ pub const KEYS: [&str; 12] =
 pub const STANDARD_ID: &str = "builtin:standard";
 pub const MAX_FILE_BYTES: u64 = 16 * 1024;
 pub const MAX_NAME_CHARS: usize = 40;
+/// Skin files beyond this many (in file-name order) aren't opened.
+pub const MAX_SKIN_FILES: usize = 200;
 
 pub type Palette = BTreeMap<String, String>;
 
@@ -185,6 +187,15 @@ pub fn parse_skin(file_name: &str, bytes: &[u8]) -> Result<Skin, String> {
     Ok(Skin { id: format!("file:{file_name}"), name, layout, light, dark })
 }
 
+/// One bounded read: never pulls in more than `MAX_FILE_BYTES + 1` bytes, whatever the file does.
+fn read_skin_file(file: &str, path: &Path) -> Result<Skin, String> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|f| f.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|_| "couldn't be read".to_string())?;
+    parse_skin(file, &bytes)
+}
+
 /// Built-ins plus every valid `*.json` in `dir`. A missing folder is not an error.
 pub fn list(dir: &Path) -> SkinList {
     let mut skins = builtins();
@@ -192,20 +203,27 @@ pub fn list(dir: &Path) -> SkinList {
     let mut folder_error = None;
     match fs::read_dir(dir) {
         Ok(entries) => {
-            let mut files: Vec<(String, std::path::PathBuf)> = entries
+            let mut files: Vec<(String, std::path::PathBuf, bool)> = entries
                 .flatten()
                 .map(|e| e.path())
-                .filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("json")))
-                .filter_map(|p| Some((p.file_name()?.to_str()?.to_string(), p)))
+                .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("json")))
+                .filter_map(|p| {
+                    let meta = fs::symlink_metadata(&p).ok()?;
+                    let is_link = meta.file_type().is_symlink();
+                    if !is_link && !meta.is_file() {
+                        return None;
+                    }
+                    Some((p.file_name()?.to_str()?.to_string(), p, is_link))
+                })
                 .collect();
             files.sort();
             let mut found = Vec::new();
-            for (file, path) in files {
-                let parsed = match fs::metadata(&path) {
-                    Ok(m) if m.len() > MAX_FILE_BYTES => Err("larger than 16 KB".to_string()),
-                    Ok(_) => fs::read(&path).map_err(|_| "couldn't be read".to_string()).and_then(|b| parse_skin(&file, &b)),
-                    Err(_) => Err("couldn't be read".to_string()),
-                };
+            for (i, (file, path, is_link)) in files.into_iter().enumerate() {
+                if i >= MAX_SKIN_FILES {
+                    skipped.push(Skipped { file, reason: "too many skin files".into() });
+                    continue;
+                }
+                let parsed = if is_link { Err("is a link".to_string()) } else { read_skin_file(&file, &path) };
                 match parsed {
                     Ok(s) => found.push(s),
                     Err(reason) => skipped.push(Skipped { file, reason }),
@@ -328,6 +346,41 @@ mod tests {
         assert_eq!(names, ["alpha", "Beta"]);
         assert_eq!(l.skipped, [Skipped { file: "bad.json".into(), reason: "colour `bg` isn't a hex value".into() }]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn oversized_file_skipped_with_single_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = format!(r#"{{"name":"Big","pad":"{}"}}"#, "x".repeat(20 * 1024));
+        fs::write(dir.path().join("big.json"), big).unwrap();
+        let l = list(dir.path());
+        assert_eq!(l.skins.len(), builtins().len());
+        assert_eq!(l.skipped, [Skipped { file: "big.json".into(), reason: "larger than 16 KB".into() }]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_skin_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.json");
+        fs::write(&real, r#"{"name":"Real"}"#).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link.json")).unwrap();
+        let l = list(dir.path());
+        assert_eq!(l.skipped, [Skipped { file: "link.json".into(), reason: "is a link".into() }]);
+        assert_eq!(l.skins.len(), builtins().len() + 1);
+    }
+
+    #[test]
+    fn skin_file_count_is_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..MAX_SKIN_FILES + 3 {
+            fs::write(dir.path().join(format!("s{i:04}.json")), format!(r#"{{"name":"S{i}"}}"#)).unwrap();
+        }
+        let l = list(dir.path());
+        assert_eq!(l.skins.len(), builtins().len() + MAX_SKIN_FILES);
+        assert_eq!(l.skipped.len(), 3);
+        assert!(l.skipped.iter().all(|k| k.reason == "too many skin files"));
+        assert_eq!(l.skipped[0].file, format!("s{:04}.json", MAX_SKIN_FILES));
     }
 
     #[test]
