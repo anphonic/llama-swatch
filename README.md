@@ -124,7 +124,7 @@ a request that was already running may show as Idle until it sends output or fin
   closes the menu. Full dashboard returns to the full skin you last used. The "Cycle through
   loaded models in Mini" option rotates through every loaded model every 4 s.
 
-  <img src="docs/images/screenshot-mini.png" alt="Mini strip with the Minimal skin: the busiest model, its Streaming status and a +2 count of the other loaded models, with minimise and close buttons" width="300">
+  <img src="docs/images/screenshot-mini.png" alt="Mini strip with the Minimal skin: the busiest model, its Streaming status and a +3 count of the other loaded models, with the pin, minimise and close buttons" width="340">
 
   ```json
   {
